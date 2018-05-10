@@ -52,6 +52,11 @@ func testConsoleLogger(t *testing.T, tee bool, entrypoint string) {
 	}
 
 	// Run subprocess and collect console output.
+	//
+	// TODO(dweitzman): The Args[0] value with bazel looks like
+	// go_default_test.runfiles/__main__/go/vt/logutil/linux_amd64_stripped/go_default_test---
+	// and isn't directly runnable. It's probably simplest to separate out a dedicated binary
+	// that creates log output instead of trying to have the process re-run itself.
 	cmd := exec.Command(os.Args[0], "-test.run=^"+entrypoint+"$", "-logtostderr")
 	cmd.Env = append(os.Environ(), "TEST_CONSOLE_LOGGER=1")
 	stderr, err := cmd.StderrPipe()

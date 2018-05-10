@@ -1,0 +1,47 @@
+FROM buildpack-deps:stretch-scm
+
+# Need to do this first to get the add-apt-repository command
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  software-properties-common \
+  && rm -rf /var/lib/apt/lists/*
+
+# Bazel apt repo
+RUN echo "deb [arch=amd64] http://storage.googleapis.com/bazel-apt stable jdk1.8" | tee /etc/apt/sources.list.d/bazel.list
+RUN curl https://bazel.build/bazel-release.pub.gpg | apt-key add -
+
+# Percona 5.6 apt repo
+RUN for i in $(seq 1 10); do apt-key adv --keyserver keys.gnupg.net --recv-keys 8507EFA5 && break; done && \
+    add-apt-repository 'deb http://repo.percona.com/apt stretch main' && \
+    { \
+        echo debconf debconf/frontend select Noninteractive; \
+        echo percona-server-server-5.6 percona-server-server/root_password password 'unused'; \
+        echo percona-server-server-5.6 percona-server-server/root_password_again password 'unused'; \
+    } | debconf-set-selections
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  libperconaserverclient18.1-dev  \
+  percona-server-server-5.6 \
+  bazel \
+  unzip \
+  zip \
+  && rm -rf /var/lib/apt/lists/* \
+            /etc/apt/sources.list.d/bazel.list
+
+# Create vitess user
+RUN groupadd -r vitess && useradd -r -g vitess vitess && \
+    mkdir -p /vt/vtdataroot /home/vitess && \
+    chown -R vitess:vitess /vt /home/vitess
+
+USER vitess
+WORKDIR /vt/src
+
+ADD --chown=vitess:vitess \
+    http://apache.org/dist/zookeeper/zookeeper-3.4.10/zookeeper-3.4.10.tar.gz \
+    https://releases.hashicorp.com/consul/1.0.7/consul_1.0.7_linux_amd64.zip \
+    https://github.com/coreos/etcd/releases/download/v3.3.5/etcd-v3.3.5-linux-amd64.tar.gz \
+    /tmp/
+
+# If the user doesn't specify a command, run all unit tests.
+# CMD ["/vt/src/scripts/bootstrap_and_run_unit_tests_from_within_docker.sh"]
+# ENTRYPOINT ./scripts/bootstrap_and_run_unit_tests_from_within_docker.sh
+CMD ["/bin/bash"]

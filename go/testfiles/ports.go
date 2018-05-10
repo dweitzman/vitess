@@ -18,6 +18,7 @@ package testfiles
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
 )
@@ -54,7 +55,7 @@ var (
 //
 var (
 	// GoVtTopoZk2topoZkID is used by the go/vt/topo/zk2topo package.
-	GoVtTopoZk2topoZkID = 1
+	GoVtTopoZk2topoZkID = int(rand.Uint32())
 )
 
 func getPortStart() int {

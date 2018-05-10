@@ -48,6 +48,19 @@ func VtRoot() (root string, err error) {
 	return
 }
 
+// VtTop returns $VTTOP or tries to guess its value if it's not set.
+func VtTop() (top string, err error) {
+	if top = os.Getenv("VTTOP"); top != "" {
+		return top, nil
+	}
+	root, err := VtRoot()
+	if err != nil {
+		return
+	}
+	top = path.Join(root, "/src/vitess.io/vitess/")
+	return
+}
+
 // VtDataRoot returns $VTDATAROOT or the default if $VTDATAROOT is not
 // set. VtDataRoot does not check if the directory exists and is
 // writable.

@@ -35,14 +35,14 @@ func TestMycnf(t *testing.T) {
 	// Assigning ServerID to be different from tablet UID to make sure that there are no
 	// assumptions in the code that those IDs are the same.
 	cnf.ServerID = 22222
-	root, err := env.VtRoot()
+	top, err := env.VtTop()
 	if err != nil {
 		t.Errorf("err: %v", err)
 	}
 	cnfTemplatePaths := []string{
-		path.Join(root, "src/vitess.io/vitess/config/mycnf/default.cnf"),
-		path.Join(root, "src/vitess.io/vitess/config/mycnf/replica.cnf"),
-		path.Join(root, "src/vitess.io/vitess/config/mycnf/master.cnf"),
+		path.Join(top, "config/mycnf/default.cnf"),
+		path.Join(top, "config/mycnf/replica.cnf"),
+		path.Join(top, "config/mycnf/master.cnf"),
 	}
 	data, err := cnf.makeMycnf(cnfTemplatePaths)
 	if err != nil {

@@ -17,6 +17,8 @@ limitations under the License.
 package zkctl
 
 import (
+	"fmt"
+	"math/rand"
 	"testing"
 )
 
@@ -29,8 +31,8 @@ func TestLifeCycle(t *testing.T) {
 		t.Skip("skipping integration test in short mode.")
 	}
 
-	config := "255@voltron:2888:3888:2181"
-	myID := 255
+	myID := rand.Uint32()
+	config := fmt.Sprintf("%d@voltron:2888:3888:2181", myID)
 
 	zkConf := MakeZkConfigFromString(config, uint32(myID))
 	zkd := NewZkd(zkConf)

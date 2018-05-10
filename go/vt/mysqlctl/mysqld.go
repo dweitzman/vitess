@@ -488,14 +488,14 @@ func (mysqld *Mysqld) InitConfig() error {
 		log.Errorf("%s", err.Error())
 		return err
 	}
-	root, err := vtenv.VtRoot()
+	top, err := vtenv.VtTop()
 	if err != nil {
 		log.Errorf("%s", err.Error())
 		return err
 	}
 
 	// Set up config files.
-	if err = mysqld.initConfig(root, mysqld.config.path); err != nil {
+	if err = mysqld.initConfig(top, mysqld.config.path); err != nil {
 		log.Errorf("failed creating %v: %v", mysqld.config.path, err)
 		return err
 	}
@@ -663,7 +663,7 @@ func (mysqld *Mysqld) RefreshConfig(ctx context.Context) error {
 	}
 
 	log.Info("Checking for updates to my.cnf")
-	root, err := vtenv.VtRoot()
+	top, err := vtenv.VtTop()
 	if err != nil {
 		return err
 	}
@@ -673,7 +673,7 @@ func (mysqld *Mysqld) RefreshConfig(ctx context.Context) error {
 	}
 
 	defer os.Remove(f.Name())
-	err = mysqld.initConfig(root, f.Name())
+	err = mysqld.initConfig(top, f.Name())
 	if err != nil {
 		return fmt.Errorf("Could not initConfig in %v: %v", f.Name(), err)
 	}
@@ -727,11 +727,11 @@ func (mysqld *Mysqld) ReinitConfig(ctx context.Context) error {
 	if err := mysqld.config.RandomizeMysqlServerID(); err != nil {
 		return err
 	}
-	root, err := vtenv.VtRoot()
+	top, err := vtenv.VtTop()
 	if err != nil {
 		return err
 	}
-	return mysqld.initConfig(root, mysqld.config.path)
+	return mysqld.initConfig(top, mysqld.config.path)
 }
 
 func (mysqld *Mysqld) createDirs() error {

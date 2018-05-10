@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/consul/api"
 	"golang.org/x/net/context"
 	"vitess.io/vitess/go/testfiles"
+	"vitess.io/vitess/go/vt/env"
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/topo/test"
 
@@ -75,7 +76,12 @@ func startConsul(t *testing.T) (*exec.Cmd, string, string) {
 		t.Fatalf("cannot close config: %v", err)
 	}
 
-	cmd := exec.Command("consul",
+	root, err := env.VtRoot()
+	if err != nil {
+		t.Fatalf("cannot locate VTROOT: %v", err)
+	}
+
+	cmd := exec.Command(path.Join(root, "/bin/consul"),
 		"agent",
 		"-dev",
 		"-config-file", configFilename)
