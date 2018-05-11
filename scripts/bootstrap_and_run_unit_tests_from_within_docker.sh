@@ -1,37 +1,15 @@
-bazel build --symlink_prefix=/ go/cmd/...
+# Build the vitess binaries, fetch external binaries, and put them
+# into /vt/bin ($VTROOT/bin) for later use within tests.
+bazel build --symlink_prefix=/ :test_binaries_dist :binaries_dist @zookeeper//:contrib/fatjar/zookeeper-3.4.10-fatjar.jar
+tar xf `bazel info bazel-bin`/test_binaries_dist.tar -C /vt/
+tar xf `bazel info bazel-bin`/binaries_dist.tar -C /vt/
 
-BAZEL_BIN_ROOT=`bazel info bazel-bin`
+mkdir -p /vt/dist/vt-zookeeper-3.4.10/lib
+cp `bazel info output_base`/external/zookeeper/contrib/fatjar/zookeeper-3.4.10-fatjar.jar /vt/dist/vt-zookeeper-3.4.10/lib
+# Prevent "Invalid signature file" errors by deleting signatures
+zip -d "/vt/dist/vt-zookeeper-3.4.10/lib/zookeeper-3.4.10-fatjar.jar" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*SF'
 
-mkdir -p /vt/bin
-
-if [ ! -L /vt/bin/etcd ]; then
-  # Get etcd
-  # wget -P /tmp/ https://github.com/coreos/etcd/releases/download/v3.3.5/etcd-v3.3.5-linux-amd64.tar.gz
-  tar zxf /tmp/etcd-v3.3.5-linux-amd64.tar.gz -C /tmp/
-  ln -s /tmp/etcd-v3.3.5-linux-amd64/etcd /vt/bin
-fi
-
-if [ ! -L /vt/bin/consul ]; then
-  # Get consul
-  # wget -P /tmp/ https://releases.hashicorp.com/consul/1.0.7/consul_1.0.7_linux_amd64.zip
-  unzip /tmp/consul_1.0.7_linux_amd64.zip -d /tmp/consul_1.0.7_linux_amd64
-  ln -s /tmp/consul_1.0.7_linux_amd64/consul /vt/bin
-fi
-
-if [ ! -L /vt/bin/zksrv.sh ]; then
-  # Get zk
-  # wget -P /tmp/ "http://apache.org/dist/zookeeper/zookeeper-3.4.10/zookeeper-3.4.10.tar.gz"
-  tar zxf /tmp/zookeeper-3.4.10.tar.gz -C /tmp/
-  cp /tmp/zookeeper-3.4.10/contrib/fatjar/zookeeper-3.4.10-fatjar.jar /tmp/zookeeper-3.4.10/lib
-  # Prevent "Invalid signature file" errors by deleting signatures
-  zip -d "/tmp/zookeeper-3.4.10/lib/zookeeper-3.4.10-fatjar.jar" 'META-INF/*.SF' 'META-INF/*.RSA' 'META-INF/*SF'
-  mkdir -p /vt/dist/
-  ln -s /tmp/zookeeper-3.4.10 /vt/dist/vt-zookeeper-3.4.10
-  ln -s /vt/src/go/vt/zkctl/zksrv.sh /vt/bin
-fi
-
-# List all binaries
-find $BAZEL_BIN_ROOT/go/cmd/ -regex '/.*/bazel-out/.*/go/cmd/\([^/]+\)/[^/]+/\1' | xargs -I{} -n 1 ln -s {} /vt/bin
+ln -s /vt/src/go/vt/zkctl/zksrv.sh /vt/bin
 
 PROBLEM_TESTS="//go/vt/logutil:all"
 

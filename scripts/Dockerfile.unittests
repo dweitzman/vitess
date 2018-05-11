@@ -35,13 +35,4 @@ RUN groupadd -r vitess && useradd -r -g vitess vitess && \
 USER vitess
 WORKDIR /vt/src
 
-ADD --chown=vitess:vitess \
-    http://apache.org/dist/zookeeper/zookeeper-3.4.10/zookeeper-3.4.10.tar.gz \
-    https://releases.hashicorp.com/consul/1.0.7/consul_1.0.7_linux_amd64.zip \
-    https://github.com/coreos/etcd/releases/download/v3.3.5/etcd-v3.3.5-linux-amd64.tar.gz \
-    /tmp/
-
-# If the user doesn't specify a command, run all unit tests.
-# CMD ["/vt/src/scripts/bootstrap_and_run_unit_tests_from_within_docker.sh"]
-# ENTRYPOINT ./scripts/bootstrap_and_run_unit_tests_from_within_docker.sh
 CMD ["/bin/bash"]

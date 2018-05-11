@@ -13,6 +13,34 @@ gazelle(
     prefix = "vitess.io/vitess",
 )
 
+config_setting(
+    name = "darwin",
+    constraint_values = ["@bazel_tools//platforms:osx"],
+)
+
+config_setting(
+    name = "linux",
+    constraint_values = ["@bazel_tools//platforms:linux"],
+)
+
+pkg_tar(
+    name = "test_binaries_dist",
+    srcs = select(
+        {
+            ":linux": [
+                "@etcd_linux//:etcd",
+                "@consul_linux//:consul",
+            ],
+            ":darwin": [
+                "@etcd_darwin//:etcd",
+                "@consul_darwin//:consul",
+            ],
+        },
+    ),
+    mode = "0755",
+    package_dir = "bin",
+)
+
 filegroup(
     name = "testdata",
     srcs = glob(["data/test/**"]),
