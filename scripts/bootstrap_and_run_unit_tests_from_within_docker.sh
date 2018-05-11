@@ -1,8 +1,3 @@
-# OS X
-#VTROOT=`pwd`
-#VTTOP=`pwd`
-#MYSQL_ROOT=/usr/local/opt/mysql@5.6/
-
 # Inside Dockerfile.unittest image
 # The reason for separating VTROOT from VTTOP in the docker image
 # is that we mount /vt/src from the local filesystem as read-only
@@ -11,6 +6,12 @@
 VTROOT=/vt
 VTTOP=/vt/src
 MYSQL_ROOT=/usr
+
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  VTROOT=`pwd`
+  VTTOP=`pwd`
+  MYSQL_ROOT=/usr/local/opt/mysql@5.6/
+fi
 
 # Build the vitess binaries, fetch external binaries, and put them
 # into /vt/bin ($VTROOT/bin) for later use within tests.
@@ -25,7 +26,7 @@ zip -d "$VTROOT/dist/vt-zookeeper-3.4.10/lib/zookeeper-3.4.10-fatjar.jar" 'META-
 
 ln -f -s $VTTOP/go/vt/zkctl/zksrv.sh $VTROOT/bin
 
-PROBLEM_TESTS="//go/vt/logutil:all"
+PROBLEM_TESTS="//go/vt/logutil:all //go/mysql:go_default_test //go/vt/topo/zk2topo:go_default_test //go/vt/topo/etcd2topo:go_default_test //go/vt/vtctld:go_default_test //go/vt/worker:go_default_test //go/vt/wrangler/testlib:go_default_test"
 
 PATH="$PATH:$VTROOT/bin" bazel test \
     --symlink_prefix=/ \
