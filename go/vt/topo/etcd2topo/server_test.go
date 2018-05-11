@@ -29,6 +29,7 @@ import (
 
 	"github.com/coreos/etcd/clientv3"
 	"vitess.io/vitess/go/testfiles"
+	"vitess.io/vitess/go/vt/env"
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/topo/test"
 
@@ -50,7 +51,11 @@ func startEtcd(t *testing.T) (*exec.Cmd, string, string) {
 	peerAddr := fmt.Sprintf("http://localhost:%v", port+1)
 	initialCluster := fmt.Sprintf("%v=%v", name, peerAddr)
 
-	cmd := exec.Command("etcd",
+	root, err := env.VtRoot()
+	if err != nil {
+		t.Fatalf("cannot locate VTROOT: %v", err)
+	}
+	cmd := exec.Command(path.Join(root, "bin/etcd"),
 		"-name", name,
 		"-advertise-client-urls", clientAddr,
 		"-initial-advertise-peer-urls", peerAddr,
