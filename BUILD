@@ -1,4 +1,4 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library")
+load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library", "go_path")
 load("@bazel_gazelle//:def.bzl", "gazelle")
 load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
 
@@ -24,6 +24,17 @@ go_library(
     srcs = ["test.go"],
     importpath = "vitess.io/vitess",
     visibility = ["//visibility:private"],
+)
+
+# Example usage:
+# $ bazel build :path && GOPATH=`pwd`/bazel-bin/path go build vitess.io/vitess/go/cmd/vtgate
+# Produces ./vtgate
+go_path(
+    name = "path",
+    mode = "link",
+    deps = [
+        "//go/cmd/vtgate",
+    ],
 )
 
 go_binary(
