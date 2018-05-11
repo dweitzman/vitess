@@ -5,6 +5,8 @@
 import json
 import os
 
+DANGEROUS_MODE = False
+
 def remove_subdirs(git_repo):
     idx = git_repo.find('/', git_repo.find('/') + 1)
     if git_repo.startswith('github.com') or git_repo.startswith('golang.org'):
@@ -38,7 +40,15 @@ def main():
         import_path = '_'.join(path_components).replace('.', '_')
         print '  go_repository('
         print '      name = "%s",' % import_path
-        print '      commit = "%s",' % revisions[key]
+
+        packages_with_uncontained_symlinks = ['etcd', 'procfs']
+        has_bad_symlink = next((bad for bad in packages_with_uncontained_symlinks if bad in key), False)
+        if DANGEROUS_MODE and key.startswith('github.com/') and not has_bad_symlink:
+            print '      urls = ["https://codeload.github.com/%s/zip/%s"],' % (key[len('github.com/'):], revisions[key])
+            print '      strip_prefix = "%s-%s",' % (key.split('/')[-1], revisions[key])
+            print '      type = "zip",'
+        else:
+            print '      commit = "%s",' % revisions[key]
 
         if 'coreos_etcd' in import_path:
             print '      # Avoid getting confused about a "build" file on case-insensitive systems'
