@@ -1,9 +1,13 @@
+# Ignore anything from govendor in the vendor/ directory:
+# gazelle:exclude vendor
+
 load("@io_bazel_rules_go//go:def.bzl", "go_binary", "go_library", "go_path")
 load("@bazel_gazelle//:def.bzl", "gazelle")
 load("@bazel_tools//tools/build_defs/pkg:pkg.bzl", "pkg_tar")
 
 exports_files([
     "data/test",
+    "data/test/cgzip_eof.gz",
     "vendor/vendor.json",
 ])
 
