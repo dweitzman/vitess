@@ -43,6 +43,7 @@ limitations under the License.
 syntax = "proto3";
 
 package vttest;
+option go_package = "vitess.io/vitess/go/vt/proto/vttest";
 
 // Shard describes a single shard in a keyspace.
 message Shard {

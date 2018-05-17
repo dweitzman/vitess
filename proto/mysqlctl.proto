@@ -20,6 +20,7 @@ limitations under the License.
 syntax = "proto3";
 
 package mysqlctl;
+option go_package = "vitess.io/vitess/go/vt/proto/mysqlctl";
 
 message StartRequest{
   repeated string mysqld_args = 1;

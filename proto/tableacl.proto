@@ -19,6 +19,7 @@ limitations under the License.
 syntax = "proto3";
 
 package tableacl;
+option go_package = "vitess.io/vitess/go/vt/proto/tableacl";
 
 // TableGroupSpec defines ACLs for a group of tables.
 message TableGroupSpec {

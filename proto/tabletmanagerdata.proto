@@ -20,6 +20,7 @@ limitations under the License.
 syntax = "proto3";
 
 package tabletmanagerdata;
+option go_package = "vitess.io/vitess/go/vt/proto/tabletmanagerdata";
 
 import "query.proto";
 import "topodata.proto";

@@ -22,6 +22,7 @@ syntax = "proto3";
 option java_package="io.vitess.proto.grpc";
 
 package vtgateservice;
+option go_package = "vitess.io/vitess/go/vt/proto/vtgateservice";
 
 import "vtgate.proto";
 import "query.proto";

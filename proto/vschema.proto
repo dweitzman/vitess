@@ -19,6 +19,7 @@ limitations under the License.
 syntax = "proto3";
 
 package vschema;
+option go_package = "vitess.io/vitess/go/vt/proto/vschema";
 
 import "query.proto";
 

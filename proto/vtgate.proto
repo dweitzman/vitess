@@ -19,6 +19,7 @@ limitations under the License.
 syntax = "proto3";
 
 package vtgate;
+option go_package = "vitess.io/vitess/go/vt/proto/vtgate";
 
 option java_package="io.vitess.proto";
 

@@ -20,6 +20,7 @@ limitations under the License.
 syntax = "proto3";
 
 package vtctlservice;
+option go_package = "vitess.io/vitess/go/vt/proto/vtctlservice";
 
 import "vtctldata.proto";
 

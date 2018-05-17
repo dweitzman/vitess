@@ -21,6 +21,7 @@ limitations under the License.
 syntax = "proto3";
 
 package workflow;
+option go_package = "vitess.io/vitess/go/vt/proto/workflow";
 
 // WorkflowState describes the state of a workflow.
 // This constant should match the Node object described in

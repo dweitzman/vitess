@@ -20,6 +20,7 @@ limitations under the License.
 syntax = "proto3";
 
 package vtworkerservice;
+option go_package = "vitess.io/vitess/go/vt/proto/vtworkerservice";
 
 import "vtworkerdata.proto";
 

@@ -19,6 +19,7 @@ limitations under the License.
 syntax = "proto3";
 
 package throttlerdata;
+option go_package = "vitess.io/vitess/go/vt/proto/throttlerdata";
 
 // MaxRatesRequest is the payload for the MaxRates RPC.
 message MaxRatesRequest {

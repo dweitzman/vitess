@@ -21,6 +21,7 @@ limitations under the License.
 syntax = "proto3";
 
 package throttlerservice;
+option go_package = "vitess.io/vitess/go/vt/proto/throttlerservice";
 
 import "throttlerdata.proto";
 

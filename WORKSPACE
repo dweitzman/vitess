@@ -10,6 +10,16 @@ git_repository(
     tag = "0.11.0",
 )
 
+load("@io_bazel_rules_go//third_party:manifest.bzl", "manifest")
+
+load("@bazel_gazelle//:deps.bzl", "go_repository")
+
+go_repository(
+    name = "com_github_golang_protobuf",
+    importpath = "github.com/golang/protobuf",
+    commit = "b4deda0973fb4c70b50d226b1af49f3da59f5265",
+)
+
 load("//bazel:go_repos.bzl", "register_go_repos")
 
 # NOTE(dweitzman): It's important to put this before registering bazel rules / gazelle deps

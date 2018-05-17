@@ -19,6 +19,7 @@ limitations under the License.
 syntax = "proto3";
 
 package logutil;
+option go_package = "vitess.io/vitess/go/vt/proto/logutil";
 
 // Time represents a time stamp in nanoseconds. In go, use logutil library
 // to convert times.
