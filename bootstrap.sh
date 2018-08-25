@@ -280,13 +280,10 @@ fi
 
 # Install third-party Go tools used as part of the development workflow.
 #
-# DO NOT ADD LIBRARY DEPENDENCIES HERE. Instead use govendor as described below.
-#
-# Note: We explicitly do not vendor the tools below because a) we want to stay
-# on their latest version and b) it's easier to "go install" them this way.
+# DO NOT ADD LIBRARY DEPENDENCIES HERE. Instead run "go mod tidy" to add
+# them to go.mod
 gotools=" \
        github.com/golang/mock/mockgen \
-       github.com/kardianos/govendor \
        golang.org/x/lint/golint \
        golang.org/x/tools/cmd/cover \
        golang.org/x/tools/cmd/goimports \
@@ -296,22 +293,6 @@ gotools=" \
 echo "Installing dev tools with 'go get'..."
 # shellcheck disable=SC2086
 go get -u $gotools || fail "Failed to download some Go tools with 'go get'. Please re-run bootstrap.sh in case of transient errors."
-
-# Download dependencies that are version-pinned via govendor.
-#
-# To add a new dependency, run:
-#   govendor fetch <package_path>
-#
-# Existing dependencies can be updated to the latest version with 'fetch' as well.
-#
-# Then:
-#   git add vendor/vendor.json
-#   git commit
-#
-# See https://github.com/kardianos/govendor for more options.
-echo "Updating govendor dependencies..."
-govendor sync || fail "Failed to download/update dependencies with govendor. Please re-run bootstrap.sh in case of transient errors."
-
 
 #
 # 3. Detection of installed MySQL and setting MYSQL_FLAVOR.
