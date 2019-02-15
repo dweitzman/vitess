@@ -28,18 +28,8 @@ func TestTabletErrorFromRPCError(t *testing.T) {
 		in   *vtrpcpb.RPCError
 		want vtrpcpb.Code
 	}{{
-		in: &vtrpcpb.RPCError{
-			LegacyCode: vtrpcpb.LegacyErrorCode_BAD_INPUT_LEGACY,
-			Message:    "bad input",
-		},
-		want: vtrpcpb.Code_INVALID_ARGUMENT,
-	}, {
-		in: &vtrpcpb.RPCError{
-			LegacyCode: vtrpcpb.LegacyErrorCode_BAD_INPUT_LEGACY,
-			Message:    "bad input",
-			Code:       vtrpcpb.Code_INVALID_ARGUMENT,
-		},
-		want: vtrpcpb.Code_INVALID_ARGUMENT,
+		in:   nil,
+		want: vtrpcpb.Code_OK,
 	}, {
 		in: &vtrpcpb.RPCError{
 			Message: "bad input",
