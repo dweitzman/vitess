@@ -1,9 +1,26 @@
+/*
+Copyright 2019 The Vitess Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 // Package vterrors provides simple error handling primitives for Vitess
 //
 // In all Vitess code, errors should be propagated using vterrors.Wrapf()
-// and not fmt.Errorf().
+// and not fmt.Errorf(). This makes sure that stacktraces are kept and
+// propagated correctly.
 //
-// New errors should be created using vterrors.New
+// New errors should be created using vterrors.New or vterrors.Errorf
 //
 // Vitess uses canonical error codes for error reporting. This is based
 // on years of industry experience with error reporting. This idea is
@@ -27,9 +44,10 @@
 // Retrieving the cause of an error
 //
 // Using vterrors.Wrap constructs a stack of errors, adding context to the
-// preceding error. Depending on the nature of the error it may be necessary
-// to reverse the operation of errors.Wrap to retrieve the original error
-// for inspection. Any error value which implements this interface
+// preceding error, instead of simply building up a string.
+// Depending on the nature of the error it may be necessary to reverse the
+// operation of errors.Wrap to retrieve the original error for inspection.
+// Any error value which implements this interface
 //
 //     type causer interface {
 //             Cause() error
@@ -60,8 +78,7 @@
 //
 //     %s    print the error. If the error has a Cause it will be
 //           printed recursively
-//     %v    see %s
-//     %+v   extended format. Each Frame of the error's StackTrace will
+//     %v    extended format. Each Frame of the error's StackTrace will
 //           be printed in detail.
 //
 // Most but not all of the code in this file was originally copied from
@@ -69,11 +86,22 @@
 package vterrors
 
 import (
+	"flag"
 	"fmt"
-	"golang.org/x/net/context"
 	"io"
+
+	"context"
+
 	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
+
+// LogErrStacks controls whether or not printing errors includes the
+// embedded stack trace in the output.
+var LogErrStacks bool
+
+func init() {
+	flag.BoolVar(&LogErrStacks, "log_err_stacks", false, "log stack traces for errors")
+}
 
 // New returns an error with the supplied message.
 // New also records the stack trace at the point it was called.
@@ -81,16 +109,6 @@ func New(code vtrpcpb.Code, message string) error {
 	return &fundamental{
 		msg:   message,
 		code:  code,
-		stack: callers(),
-	}
-}
-
-// NewWithoutCode returns an error when no applicable error code is available
-// It will record the stack trace when creating the error
-func NewWithoutCode(message string) error {
-	return &fundamental{
-		msg:   message,
-		code:  vtrpcpb.Code_UNKNOWN,
 		stack: callers(),
 	}
 }
@@ -106,10 +124,23 @@ func Errorf(code vtrpcpb.Code, format string, args ...interface{}) error {
 	}
 }
 
+// NewErrorf formats according to a format specifier and returns the string
+// as a value that satisfies error.
+// NewErrorf also records the stack trace at the point it was called.
+func NewErrorf(code vtrpcpb.Code, state State, format string, args ...interface{}) error {
+	return &fundamental{
+		msg:   fmt.Sprintf(format, args...),
+		code:  code,
+		state: state,
+		stack: callers(),
+	}
+}
+
 // fundamental is an error that has a message and a stack, but no caller.
 type fundamental struct {
-	msg  string
-	code vtrpcpb.Code
+	msg   string
+	code  vtrpcpb.Code
+	state State
 	*stack
 }
 
@@ -118,17 +149,16 @@ func (f *fundamental) Error() string { return f.msg }
 func (f *fundamental) Format(s fmt.State, verb rune) {
 	switch verb {
 	case 'v':
-		if s.Flag('+') {
-			io.WriteString(s, "Code: "+f.code.String()+"\n")
-			io.WriteString(s, f.msg+"\n")
+		panicIfError(io.WriteString(s, "Code: "+f.code.String()+"\n"))
+		panicIfError(io.WriteString(s, f.msg+"\n"))
+		if LogErrStacks {
 			f.stack.Format(s, verb)
-			return
 		}
-		fallthrough
+		return
 	case 's':
-		io.WriteString(s, f.msg)
+		panicIfError(io.WriteString(s, f.msg))
 	case 'q':
-		fmt.Fprintf(s, "%q", f.msg)
+		panicIfError(fmt.Fprintf(s, "%q", f.msg))
 	}
 }
 
@@ -156,6 +186,24 @@ func Code(err error) vtrpcpb.Code {
 		return vtrpcpb.Code_DEADLINE_EXCEEDED
 	}
 	return vtrpcpb.Code_UNKNOWN
+}
+
+// ErrState returns the error state if it's a vtError.
+// If err is nil, it returns Undefined.
+func ErrState(err error) State {
+	if err == nil {
+		return Undefined
+	}
+	if err, ok := err.(*fundamental); ok {
+		return err.state
+	}
+
+	cause := Cause(err)
+	if cause != err && cause != nil {
+		// If we did not find an error state at the outer level, let's find the cause and check it's state
+		return ErrState(cause)
+	}
+	return Undefined
 }
 
 // Wrap returns an error annotating err with a stack trace
@@ -196,17 +244,24 @@ func (w *wrapping) Error() string { return w.msg + ": " + w.cause.Error() }
 func (w *wrapping) Cause() error  { return w.cause }
 
 func (w *wrapping) Format(s fmt.State, verb rune) {
-	switch verb {
-	case 'v':
-		if s.Flag('+') {
-			fmt.Fprintf(s, "%+v\n", w.Cause())
-			io.WriteString(s, w.msg)
+	if rune('v') == verb {
+		panicIfError(fmt.Fprintf(s, "%v\n", w.Cause()))
+		panicIfError(io.WriteString(s, w.msg))
+		if LogErrStacks {
 			w.stack.Format(s, verb)
-			return
 		}
-		fallthrough
-	case 's', 'q':
-		io.WriteString(s, w.Error())
+		return
+	}
+
+	if rune('s') == verb || rune('q') == verb {
+		panicIfError(io.WriteString(s, w.Error()))
+	}
+}
+
+// since we can't return an error, let's panic if something goes wrong here
+func panicIfError(_ int, err error) {
+	if err != nil {
+		panic(err)
 	}
 }
 

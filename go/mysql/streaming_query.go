@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -47,7 +47,7 @@ func (c *Conn) ExecuteStreamFetch(query string) (err error) {
 	}
 
 	// Get the result.
-	_, _, colNumber, _, _, err := c.readComQueryResponse()
+	colNumber, _, err := c.readComQueryResponse()
 	if err != nil {
 		return err
 	}
@@ -107,7 +107,7 @@ func (c *Conn) Fields() ([]*querypb.Field, error) {
 
 // FetchNext returns the next result for an ongoing streaming query.
 // It returns (nil, nil) if there is nothing more to read.
-func (c *Conn) FetchNext() ([]sqltypes.Value, error) {
+func (c *Conn) FetchNext(in []sqltypes.Value) ([]sqltypes.Value, error) {
 	if c.fields == nil {
 		// We are already done, and the result was closed.
 		return nil, NewSQLError(CRCommandsOutOfSync, SSUnknownSQLState, "no streaming query in progress")
@@ -133,14 +133,15 @@ func (c *Conn) FetchNext() ([]sqltypes.Value, error) {
 	}
 
 	// Regular row.
-	return c.parseRow(data, c.fields)
+	return c.parseRow(data, c.fields, readLenEncStringAsBytes, in)
 }
 
 // CloseResult can be used to terminate a streaming query
 // early. It just drains the remaining values.
 func (c *Conn) CloseResult() {
+	row := make([]sqltypes.Value, 0, len(c.fields))
 	for c.fields != nil {
-		rows, err := c.FetchNext()
+		rows, err := c.FetchNext(row[:0])
 		if err != nil || rows == nil {
 			// We either got an error, or got the last result.
 			c.fields = nil

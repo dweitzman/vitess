@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
+
+	"vitess.io/vitess/go/bytes2"
 
 	"vitess.io/vitess/go/sqltypes"
 
@@ -53,23 +58,63 @@ func (pq *ParsedQuery) GenerateQuery(bindVariables map[string]*querypb.BindVaria
 	}
 	var buf strings.Builder
 	buf.Grow(len(pq.Query))
+	if err := pq.Append(&buf, bindVariables, extras); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// Append appends the generated query to the provided buffer.
+func (pq *ParsedQuery) Append(buf *strings.Builder, bindVariables map[string]*querypb.BindVariable, extras map[string]Encodable) error {
 	current := 0
 	for _, loc := range pq.bindLocations {
 		buf.WriteString(pq.Query[current:loc.offset])
 		name := pq.Query[loc.offset : loc.offset+loc.length]
 		if encodable, ok := extras[name[1:]]; ok {
-			encodable.EncodeSQL(&buf)
+			encodable.EncodeSQL(buf)
 		} else {
 			supplied, _, err := FetchBindVar(name, bindVariables)
 			if err != nil {
-				return "", err
+				return err
 			}
-			EncodeValue(&buf, supplied)
+			EncodeValue(buf, supplied)
 		}
 		current = loc.offset + loc.length
 	}
 	buf.WriteString(pq.Query[current:])
-	return buf.String(), nil
+	return nil
+}
+
+// AppendFromRow behaves like Append but takes a querypb.Row directly, assuming that
+// the fields in the row are in the same order as the placeholders in this query.
+func (pq *ParsedQuery) AppendFromRow(buf *bytes2.Buffer, fields []*querypb.Field, row *querypb.Row) error {
+	if len(fields) < len(pq.bindLocations) {
+		return vterrors.Errorf(vtrpcpb.Code_INTERNAL, "wrong number of fields: got %d fields for %d bind locations ", len(fields), len(pq.bindLocations))
+	}
+	var offsetQuery int
+	var offsetRow int64
+	for i, loc := range pq.bindLocations {
+		buf.WriteString(pq.Query[offsetQuery:loc.offset])
+
+		typ := fields[i].Type
+		if typ == querypb.Type_TUPLE {
+			return vterrors.Errorf(vtrpcpb.Code_INTERNAL, "unexpected Type_TUPLE for value %d", i)
+		}
+
+		length := row.Lengths[i]
+		if length < 0 {
+			// -1 means a null variable; serialize it directly
+			buf.WriteString("null")
+		} else {
+			vv := sqltypes.MakeTrusted(typ, row.Values[offsetRow:offsetRow+length])
+			vv.EncodeSQLBytes2(buf)
+			offsetRow += length
+		}
+
+		offsetQuery = loc.offset + loc.length
+	}
+	buf.WriteString(pq.Query[offsetQuery:])
+	return nil
 }
 
 // MarshalJSON is a custom JSON marshaler for ParsedQuery.
@@ -83,7 +128,7 @@ func EncodeValue(buf *strings.Builder, value *querypb.BindVariable) {
 	if value.Type != querypb.Type_TUPLE {
 		// Since we already check for TUPLE, we don't expect an error.
 		v, _ := sqltypes.BindVariableToValue(value)
-		v.EncodeSQL(buf)
+		v.EncodeSQLStringBuilder(buf)
 		return
 	}
 
@@ -93,7 +138,7 @@ func EncodeValue(buf *strings.Builder, value *querypb.BindVariable) {
 		if i != 0 {
 			buf.WriteString(", ")
 		}
-		sqltypes.ProtoToValue(bv).EncodeSQL(buf)
+		sqltypes.ProtoToValue(bv).EncodeSQLStringBuilder(buf)
 	}
 	buf.WriteByte(')')
 }
@@ -125,4 +170,22 @@ func FetchBindVar(name string, bindVariables map[string]*querypb.BindVariable) (
 	}
 
 	return supplied, false, nil
+}
+
+// ParseAndBind is a one step sweep that binds variables to an input query, in order of placeholders.
+// It is useful when one doesn't have any parser-variables, just bind variables.
+// Example:
+//   query, err := ParseAndBind("select * from tbl where name=%a", sqltypes.StringBindVariable("it's me"))
+func ParseAndBind(in string, binds ...*querypb.BindVariable) (query string, err error) {
+	vars := make([]interface{}, len(binds))
+	for i := range binds {
+		vars[i] = fmt.Sprintf(":var%d", i)
+	}
+	parsed := BuildParsedQuery(in, vars...)
+
+	bindVars := map[string]*querypb.BindVariable{}
+	for i := range binds {
+		bindVars[fmt.Sprintf("var%d", i)] = binds[i]
+	}
+	return parsed.GenerateQuery(bindVars, nil)
 }

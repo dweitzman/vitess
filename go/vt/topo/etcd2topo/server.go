@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,11 +34,24 @@ We follow these conventions within this package:
 package etcd2topo
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"flag"
 	"strings"
 	"time"
 
-	"github.com/coreos/etcd/clientv3"
+	"google.golang.org/grpc"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/pkg/v3/tlsutil"
+
 	"vitess.io/vitess/go/vt/topo"
+)
+
+var (
+	clientCertPath = flag.String("topo_etcd_tls_cert", "", "path to the client cert to use to connect to the etcd topo server, requires topo_etcd_tls_key, enables TLS")
+	clientKeyPath  = flag.String("topo_etcd_tls_key", "", "path to the client key to use to connect to the etcd topo server, enables TLS")
+	serverCaPath   = flag.String("topo_etcd_tls_ca", "", "path to the ca to use to validate the server cert when connecting to the etcd topo server")
 )
 
 // Factory is the consul topo.Factory implementation.
@@ -71,12 +84,57 @@ func (s *Server) Close() {
 	s.cli = nil
 }
 
-// NewServer returns a new etcdtopo.Server.
-func NewServer(serverAddr, root string) (*Server, error) {
-	cli, err := clientv3.New(clientv3.Config{
+func newTLSConfig(certPath, keyPath, caPath string) (*tls.Config, error) {
+	var tlscfg *tls.Config
+	// If TLS is enabled, attach TLS config info.
+	if certPath != "" && keyPath != "" {
+		var (
+			cert *tls.Certificate
+			cp   *x509.CertPool
+			err  error
+		)
+
+		cert, err = tlsutil.NewCert(certPath, keyPath, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if caPath != "" {
+			cp, err = tlsutil.NewCertPool([]string{caPath})
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		tlscfg = &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			RootCAs:            cp,
+			InsecureSkipVerify: false,
+		}
+		if cert != nil {
+			tlscfg.Certificates = []tls.Certificate{*cert}
+		}
+	}
+	return tlscfg, nil
+}
+
+// NewServerWithOpts creates a new server with the provided TLS options
+func NewServerWithOpts(serverAddr, root, certPath, keyPath, caPath string) (*Server, error) {
+	// TODO: Rename this to NewServer and change NewServer to a name that signifies it uses the process-wide TLS settings.
+	config := clientv3.Config{
 		Endpoints:   strings.Split(serverAddr, ","),
 		DialTimeout: 5 * time.Second,
-	})
+		DialOptions: []grpc.DialOption{grpc.WithBlock()},
+	}
+
+	tlscfg, err := newTLSConfig(certPath, keyPath, caPath)
+	if err != nil {
+		return nil, err
+	}
+
+	config.TLS = tlscfg
+
+	cli, err := clientv3.New(config)
 	if err != nil {
 		return nil, err
 	}
@@ -85,6 +143,13 @@ func NewServer(serverAddr, root string) (*Server, error) {
 		cli:  cli,
 		root: root,
 	}, nil
+}
+
+// NewServer returns a new etcdtopo.Server.
+func NewServer(serverAddr, root string) (*Server, error) {
+	// TODO: Rename this to a name to signifies this function uses the process-wide TLS settings.
+
+	return NewServerWithOpts(serverAddr, root, *clientCertPath, *clientKeyPath, *serverCaPath)
 }
 
 func init() {

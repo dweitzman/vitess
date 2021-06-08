@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,16 +17,15 @@ limitations under the License.
 package planbuilder
 
 import (
-	"errors"
 	"fmt"
 
 	"vitess.io/vitess/go/vt/sqlparser"
 	"vitess.io/vitess/go/vt/vtgate/engine"
 )
 
-var _ builder = (*subquery)(nil)
+var _ logicalPlan = (*subquery)(nil)
 
-// subquery is a builder that wraps a subquery.
+// subquery is a logicalPlan that wraps a subquery.
 // This primitive wraps any subquery that results
 // in something that's not a route. It builds a
 // 'table' for the subquery allowing higher level
@@ -36,18 +35,16 @@ var _ builder = (*subquery)(nil)
 // clause, because a route is more versatile than
 // a subquery.
 type subquery struct {
-	order         int
+	logicalPlanCommon
 	resultColumns []*resultColumn
-	input         builder
 	esubquery     *engine.Subquery
 }
 
 // newSubquery builds a new subquery.
-func newSubquery(alias sqlparser.TableIdent, bldr builder) (*subquery, *symtab, error) {
+func newSubquery(alias sqlparser.TableIdent, plan logicalPlan) (*subquery, *symtab, error) {
 	sq := &subquery{
-		order:     bldr.Order() + 1,
-		input:     bldr,
-		esubquery: &engine.Subquery{},
+		logicalPlanCommon: newBuilderCommon(plan),
+		esubquery:         &engine.Subquery{},
 	}
 
 	// Create a 'table' that represents the subquery.
@@ -57,7 +54,7 @@ func newSubquery(alias sqlparser.TableIdent, bldr builder) (*subquery, *symtab, 
 	}
 
 	// Create column symbols based on the result column names.
-	for _, rc := range bldr.ResultColumns() {
+	for _, rc := range plan.ResultColumns() {
 		if _, ok := t.columns[rc.alias.Lowered()]; ok {
 			return nil, nil, fmt.Errorf("duplicate column names in subquery: %s", sqlparser.String(rc.alias))
 		}
@@ -70,89 +67,19 @@ func newSubquery(alias sqlparser.TableIdent, bldr builder) (*subquery, *symtab, 
 	return sq, st, nil
 }
 
-// Order satisfies the builder interface.
-func (sq *subquery) Order() int {
-	return sq.order
-}
-
-// Reorder satisfies the builder interface.
-func (sq *subquery) Reorder(order int) {
-	sq.input.Reorder(order)
-	sq.order = sq.input.Order() + 1
-}
-
-// Primitive satisfies the builder interface.
+// Primitive implements the logicalPlan interface
 func (sq *subquery) Primitive() engine.Primitive {
 	sq.esubquery.Subquery = sq.input.Primitive()
 	return sq.esubquery
 }
 
-// First satisfies the builder interface.
-func (sq *subquery) First() builder {
-	return sq
-}
-
-// ResultColumns satisfies the builder interface.
+// ResultColumns implements the logicalPlan interface
 func (sq *subquery) ResultColumns() []*resultColumn {
 	return sq.resultColumns
 }
 
-// PushFilter satisfies the builder interface.
-func (sq *subquery) PushFilter(_ *primitiveBuilder, _ sqlparser.Expr, whereType string, _ builder) error {
-	return errors.New("unsupported: filtering on results of cross-shard subquery")
-}
-
-// PushSelect satisfies the builder interface.
-func (sq *subquery) PushSelect(expr *sqlparser.AliasedExpr, _ builder) (rc *resultColumn, colnum int, err error) {
-	col, ok := expr.Expr.(*sqlparser.ColName)
-	if !ok {
-		return nil, 0, errors.New("unsupported: expression on results of a cross-shard subquery")
-	}
-
-	// colnum should already be set for subquery columns.
-	inner := col.Metadata.(*column).colnum
-	sq.esubquery.Cols = append(sq.esubquery.Cols, inner)
-
-	// Build a new column reference to represent the result column.
-	rc = newResultColumn(expr, sq)
-	sq.resultColumns = append(sq.resultColumns, rc)
-
-	return rc, len(sq.resultColumns) - 1, nil
-}
-
-// PushOrderByNull satisfies the builder interface.
-func (sq *subquery) PushOrderByNull() {
-}
-
-// PushOrderByRand satisfies the builder interface.
-func (sq *subquery) PushOrderByRand() {
-}
-
-// SetUpperLimit satisfies the builder interface.
-// For now, the call is ignored because the
-// repercussions of pushing this limit down
-// into a subquery have not been studied yet.
-// We can consider doing it in the future.
-// TODO(sougou): this could be improved.
-func (sq *subquery) SetUpperLimit(_ *sqlparser.SQLVal) {
-}
-
-// PushMisc satisfies the builder interface.
-func (sq *subquery) PushMisc(sel *sqlparser.Select) {
-}
-
-// Wireup satisfies the builder interface.
-func (sq *subquery) Wireup(bldr builder, jt *jointab) error {
-	return sq.input.Wireup(bldr, jt)
-}
-
-// SupplyVar satisfies the builder interface.
-func (sq *subquery) SupplyVar(from, to int, col *sqlparser.ColName, varname string) {
-	sq.input.SupplyVar(from, to, col, varname)
-}
-
-// SupplyCol satisfies the builder interface.
-func (sq *subquery) SupplyCol(col *sqlparser.ColName) (rc *resultColumn, colnum int) {
+// SupplyCol implements the logicalPlan interface
+func (sq *subquery) SupplyCol(col *sqlparser.ColName) (rc *resultColumn, colNumber int) {
 	c := col.Metadata.(*column)
 	for i, rc := range sq.resultColumns {
 		if rc.column == c {
@@ -160,9 +87,9 @@ func (sq *subquery) SupplyCol(col *sqlparser.ColName) (rc *resultColumn, colnum 
 		}
 	}
 
-	// columns that reference subqueries will have their colnum set.
+	// columns that reference subqueries will have their colNumber set.
 	// Let's use it here.
-	sq.esubquery.Cols = append(sq.esubquery.Cols, c.colnum)
+	sq.esubquery.Cols = append(sq.esubquery.Cols, c.colNumber)
 	sq.resultColumns = append(sq.resultColumns, &resultColumn{column: c})
 	return rc, len(sq.resultColumns) - 1
 }

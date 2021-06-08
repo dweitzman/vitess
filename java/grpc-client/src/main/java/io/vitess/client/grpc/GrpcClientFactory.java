@@ -1,12 +1,12 @@
 /*
- * Copyright 2017 Google Inc.
- *
+ * Copyright 2019 The Vitess Authors.
+
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
+
  *     http://www.apache.org/licenses/LICENSE-2.0
- *
+
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,13 +17,17 @@
 package io.vitess.client.grpc;
 
 import io.grpc.CallCredentials;
+import io.grpc.ClientInterceptor;
 import io.grpc.LoadBalancer;
+import io.grpc.LoadBalancerProvider;
+import io.grpc.LoadBalancerRegistry;
 import io.grpc.NameResolver;
 import io.grpc.netty.GrpcSslContexts;
 import io.grpc.netty.NegotiationType;
 import io.grpc.netty.NettyChannelBuilder;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.opentracing.contrib.grpc.ClientTracingInterceptor;
 import io.vitess.client.Context;
 import io.vitess.client.RpcClient;
 import io.vitess.client.RpcClientFactory;
@@ -51,16 +55,18 @@ import javax.net.ssl.SSLException;
 public class GrpcClientFactory implements RpcClientFactory {
 
   private RetryingInterceptorConfig config;
+  private final boolean useTracing;
   private CallCredentials callCredentials;
-  private LoadBalancer.Factory loadBalancerFactory;
+  private String loadBalancerPolicy;
   private NameResolver.Factory nameResolverFactory;
 
   public GrpcClientFactory() {
-    this(RetryingInterceptorConfig.noOpConfig());
+    this(RetryingInterceptorConfig.noOpConfig(), true);
   }
 
-  public GrpcClientFactory(RetryingInterceptorConfig config) {
+  public GrpcClientFactory(RetryingInterceptorConfig config, boolean useTracing) {
     this.config = config;
+    this.useTracing = useTracing;
   }
 
   public GrpcClientFactory setCallCredentials(CallCredentials value) {
@@ -69,7 +75,11 @@ public class GrpcClientFactory implements RpcClientFactory {
   }
 
   public GrpcClientFactory setLoadBalancerFactory(LoadBalancer.Factory value) {
-    loadBalancerFactory = value;
+    VitessLoadBalancer provider = new VitessLoadBalancer(value);
+    LoadBalancerRegistry registry = LoadBalancerRegistry.getDefaultRegistry();
+    registry.deregister(provider);
+    registry.register(provider);
+    loadBalancerPolicy = "vitess_lb";
     return this;
   }
 
@@ -88,11 +98,12 @@ public class GrpcClientFactory implements RpcClientFactory {
    */
   @Override
   public RpcClient create(Context ctx, String target) {
+    ClientInterceptor[] interceptors = getClientInterceptors();
     NettyChannelBuilder channel = channelBuilder(target)
         .negotiationType(NegotiationType.PLAINTEXT)
-        .intercept(new RetryingInterceptor(config));
-    if (loadBalancerFactory != null) {
-      channel.loadBalancerFactory(loadBalancerFactory);
+        .intercept(interceptors);
+    if (loadBalancerPolicy != null) {
+      channel.defaultLoadBalancingPolicy(loadBalancerPolicy);
     }
     if (nameResolverFactory != null) {
       channel.nameResolverFactory(nameResolverFactory);
@@ -100,6 +111,18 @@ public class GrpcClientFactory implements RpcClientFactory {
     return callCredentials != null
         ? new GrpcClient(channel.build(), callCredentials, ctx)
         : new GrpcClient(channel.build(), ctx);
+  }
+
+  private ClientInterceptor[] getClientInterceptors() {
+    RetryingInterceptor retryingInterceptor = new RetryingInterceptor(config);
+    ClientInterceptor[] interceptors;
+    if (useTracing) {
+      ClientTracingInterceptor tracingInterceptor = new ClientTracingInterceptor();
+      interceptors = new ClientInterceptor[]{retryingInterceptor, tracingInterceptor};
+    } else {
+      interceptors = new ClientInterceptor[]{retryingInterceptor};
+    }
+    return interceptors;
   }
 
   /**
@@ -180,9 +203,11 @@ public class GrpcClientFactory implements RpcClientFactory {
       throw new RuntimeException(exc);
     }
 
+    ClientInterceptor[] interceptors = getClientInterceptors();
+
     return new GrpcClient(
         channelBuilder(target).negotiationType(NegotiationType.TLS).sslContext(sslContext)
-            .intercept(new RetryingInterceptor(config)).build(), ctx);
+            .intercept(interceptors).build(), ctx);
   }
 
   /**
@@ -397,5 +422,36 @@ public class GrpcClientFactory implements RpcClientFactory {
       return certificateChain;
     }
   }
+
+  private class VitessLoadBalancer extends LoadBalancerProvider {
+
+    private LoadBalancer.Factory base;
+
+    public VitessLoadBalancer(LoadBalancer.Factory base) {
+      base = base;
+    }
+
+    @Override
+    public LoadBalancer newLoadBalancer(LoadBalancer.Helper helper) {
+      return base.newLoadBalancer(helper);
+    }
+
+    @Override
+    public boolean isAvailable() {
+      return true;
+    }
+
+    @Override
+    public int getPriority() {
+      return 10;
+    }
+
+    @Override
+    public String getPolicyName() {
+      return "vitess_lb";
+    }
+
+  }
+
 
 }

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,8 +17,12 @@ limitations under the License.
 package planbuilder
 
 import (
-	"errors"
 	"fmt"
+
+	"vitess.io/vitess/go/vt/vtgate/semantics"
+
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
 	"vitess.io/vitess/go/vt/sqlparser"
 	"vitess.io/vitess/go/vt/vtgate/engine"
@@ -27,7 +31,7 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
-var _ builder = (*vindexFunc)(nil)
+var _ logicalPlan = (*vindexFunc)(nil)
 
 // vindexFunc is used to build a VindexFunc primitive.
 type vindexFunc struct {
@@ -40,7 +44,7 @@ type vindexFunc struct {
 	eVindexFunc *engine.VindexFunc
 }
 
-func newVindexFunc(alias sqlparser.TableName, vindex vindexes.Vindex) (*vindexFunc, *symtab) {
+func newVindexFunc(alias sqlparser.TableName, vindex vindexes.SingleColumn) (*vindexFunc, *symtab) {
 	vf := &vindexFunc{
 		order: 1,
 		eVindexFunc: &engine.VindexFunc{
@@ -59,6 +63,8 @@ func newVindexFunc(alias sqlparser.TableName, vindex vindexes.Vindex) (*vindexFu
 	t.addColumn(sqlparser.NewColIdent("keyspace_id"), &column{origin: vf})
 	t.addColumn(sqlparser.NewColIdent("range_start"), &column{origin: vf})
 	t.addColumn(sqlparser.NewColIdent("range_end"), &column{origin: vf})
+	t.addColumn(sqlparser.NewColIdent("hex_keyspace_id"), &column{origin: vf})
+	t.addColumn(sqlparser.NewColIdent("shard"), &column{origin: vf})
 	t.isAuthoritative = true
 
 	st := newSymtab()
@@ -67,119 +73,45 @@ func newVindexFunc(alias sqlparser.TableName, vindex vindexes.Vindex) (*vindexFu
 	return vf, st
 }
 
-// Order satisfies the builder interface.
+// Order implements the logicalPlan interface
 func (vf *vindexFunc) Order() int {
 	return vf.order
 }
 
-// Reorder satisfies the builder interface.
+// Reorder implements the logicalPlan interface
 func (vf *vindexFunc) Reorder(order int) {
 	vf.order = order + 1
 }
 
-// Primitive satisfies the builder interface.
+// Primitive implements the logicalPlan interface
 func (vf *vindexFunc) Primitive() engine.Primitive {
 	return vf.eVindexFunc
 }
 
-// First satisfies the builder interface.
-func (vf *vindexFunc) First() builder {
-	return vf
-}
-
-// ResultColumns satisfies the builder interface.
+// ResultColumns implements the logicalPlan interface
 func (vf *vindexFunc) ResultColumns() []*resultColumn {
 	return vf.resultColumns
 }
 
-// PushFilter satisfies the builder interface.
-// Only some where clauses are allowed.
-func (vf *vindexFunc) PushFilter(pb *primitiveBuilder, filter sqlparser.Expr, whereType string, _ builder) error {
-	if vf.eVindexFunc.Opcode != engine.VindexNone {
-		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (multiple filters)")
-	}
-
-	// Check LHS.
-	comparison, ok := filter.(*sqlparser.ComparisonExpr)
-	if !ok {
-		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (not a comparison)")
-	}
-	if comparison.Operator != sqlparser.EqualStr {
-		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (not equality)")
-	}
-	colname, ok := comparison.Left.(*sqlparser.ColName)
-	if !ok {
-		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (lhs is not a column)")
-	}
-	if !colname.Name.EqualString("id") {
-		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (lhs is not id)")
-	}
-
-	// Check RHS.
-	// We have to check before calling NewPlanValue because NewPlanValue allows lists also.
-	if !sqlparser.IsValue(comparison.Right) {
-		return errors.New("unsupported: where clause for vindex function must be of the form id = <val> (rhs is not a value)")
-	}
-	var err error
-	vf.eVindexFunc.Value, err = sqlparser.NewPlanValue(comparison.Right)
-	if err != nil {
-		return fmt.Errorf("unsupported: where clause for vindex function must be of the form id = <val>: %v", err)
-	}
-	vf.eVindexFunc.Opcode = engine.VindexMap
+// Wireup implements the logicalPlan interface
+func (vf *vindexFunc) Wireup(logicalPlan, *jointab) error {
 	return nil
 }
 
-// PushSelect satisfies the builder interface.
-func (vf *vindexFunc) PushSelect(expr *sqlparser.AliasedExpr, _ builder) (rc *resultColumn, colnum int, err error) {
-	// Catch the case where no where clause was specified. If so, the opcode
-	// won't be set.
-	if vf.eVindexFunc.Opcode == engine.VindexNone {
-		return nil, 0, errors.New("unsupported: where clause for vindex function must be of the form id = <val> (where clause missing)")
-	}
-	col, ok := expr.Expr.(*sqlparser.ColName)
-	if !ok {
-		return nil, 0, errors.New("unsupported: expression on results of a vindex function")
-	}
-	rc = newResultColumn(expr, vf)
-	vf.resultColumns = append(vf.resultColumns, rc)
-	vf.eVindexFunc.Fields = append(vf.eVindexFunc.Fields, &querypb.Field{
-		Name: rc.alias.String(),
-		Type: querypb.Type_VARBINARY,
-	})
-	vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, col.Metadata.(*column).colnum)
-	return rc, len(vf.resultColumns) - 1, nil
-}
-
-// PushOrderByNull satisfies the builder interface.
-func (vf *vindexFunc) PushOrderByNull() {
-}
-
-// PushOrderByRand satisfies the builder interface.
-func (vf *vindexFunc) PushOrderByRand() {
-}
-
-// SetUpperLimit satisfies the builder interface.
-func (vf *vindexFunc) SetUpperLimit(_ *sqlparser.SQLVal) {
-}
-
-// PushMisc satisfies the builder interface.
-func (vf *vindexFunc) PushMisc(sel *sqlparser.Select) {
-}
-
-// Wireup satisfies the builder interface.
-func (vf *vindexFunc) Wireup(bldr builder, jt *jointab) error {
+// Wireup2 implements the logicalPlan interface
+func (vf *vindexFunc) WireupGen4(*semantics.SemTable) error {
 	return nil
 }
 
-// SupplyVar satisfies the builder interface.
+// SupplyVar implements the logicalPlan interface
 func (vf *vindexFunc) SupplyVar(from, to int, col *sqlparser.ColName, varname string) {
 	// vindexFunc is an atomic primitive. So, SupplyVar cannot be
 	// called on it.
-	panic("BUG: route is an atomic node.")
+	panic("BUG: vindexFunc is an atomic node.")
 }
 
-// SupplyCol satisfies the builder interface.
-func (vf *vindexFunc) SupplyCol(col *sqlparser.ColName) (rc *resultColumn, colnum int) {
+// SupplyCol implements the logicalPlan interface
+func (vf *vindexFunc) SupplyCol(col *sqlparser.ColName) (rc *resultColumn, colNumber int) {
 	c := col.Metadata.(*column)
 	for i, rc := range vf.resultColumns {
 		if rc.column == c {
@@ -193,8 +125,41 @@ func (vf *vindexFunc) SupplyCol(col *sqlparser.ColName) (rc *resultColumn, colnu
 		Type: querypb.Type_VARBINARY,
 	})
 
-	// columns that reference vindexFunc will have their colnum set.
+	// columns that reference vindexFunc will have their colNumber set.
 	// Let's use it here.
-	vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, c.colnum)
+	vf.eVindexFunc.Cols = append(vf.eVindexFunc.Cols, c.colNumber)
 	return rc, len(vf.resultColumns) - 1
+}
+
+// UnsupportedSupplyWeightString represents the error where the supplying a weight string is not supported
+type UnsupportedSupplyWeightString struct {
+	Type string
+}
+
+// Error function implements the error interface
+func (err UnsupportedSupplyWeightString) Error() string {
+	return fmt.Sprintf("cannot do collation on %s", err.Type)
+}
+
+// SupplyWeightString implements the logicalPlan interface
+func (vf *vindexFunc) SupplyWeightString(colNumber int) (weightcolNumber int, err error) {
+	return 0, UnsupportedSupplyWeightString{Type: "vindex function"}
+}
+
+// Rewrite implements the logicalPlan interface
+func (vf *vindexFunc) Rewrite(inputs ...logicalPlan) error {
+	if len(inputs) != 0 {
+		return vterrors.Errorf(vtrpcpb.Code_INTERNAL, "vindexFunc: wrong number of inputs")
+	}
+	return nil
+}
+
+// ContainsTables implements the logicalPlan interface
+func (vf *vindexFunc) ContainsTables() semantics.TableSet {
+	return 0
+}
+
+// Inputs implements the logicalPlan interface
+func (vf *vindexFunc) Inputs() []logicalPlan {
+	return []logicalPlan{}
 }

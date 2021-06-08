@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,11 +20,12 @@ import (
 	"flag"
 	"fmt"
 	"html/template"
+	"net/url"
 	"sort"
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"vitess.io/vitess/go/stats"
 	"vitess.io/vitess/go/vt/log"
@@ -47,6 +48,7 @@ var (
 	// setting the watch fails, we will use the last known value until
 	// srv_topo_cache_ttl elapses and we only try to re-establish the watch
 	// once every srv_topo_cache_refresh interval.
+	srvTopoTimeout      = flag.Duration("srv_topo_timeout", 5*time.Second, "topo server timeout")
 	srvTopoCacheTTL     = flag.Duration("srv_topo_cache_ttl", 1*time.Second, "how long to use cached entries for topology")
 	srvTopoCacheRefresh = flag.Duration("srv_topo_cache_refresh", 1*time.Second, "how frequently to refresh the topology for cached entries")
 )
@@ -211,11 +213,19 @@ func NewResilientServer(base *topo.Server, counterPrefix string) *ResilientServe
 		log.Fatalf("srv_topo_cache_refresh must be less than or equal to srv_topo_cache_ttl")
 	}
 
+	var metric string
+
+	if counterPrefix == "" {
+		metric = counterPrefix + "Counts"
+	} else {
+		metric = ""
+	}
+
 	return &ResilientServer{
 		topoServer:   base,
 		cacheTTL:     *srvTopoCacheTTL,
 		cacheRefresh: *srvTopoCacheRefresh,
-		counts:       stats.NewCountersWithSingleLabel(counterPrefix+"Counts", "Resilient srvtopo server operations", "type"),
+		counts:       stats.NewCountersWithSingleLabel(metric, "Resilient srvtopo server operations", "type"),
 
 		srvKeyspaceNamesCache: make(map[string]*srvKeyspaceNamesEntry),
 		srvKeyspaceCache:      make(map[string]*srvKeyspaceEntry),
@@ -228,7 +238,7 @@ func (server *ResilientServer) GetTopoServer() (*topo.Server, error) {
 }
 
 // GetSrvKeyspaceNames returns all keyspace names for the given cell.
-func (server *ResilientServer) GetSrvKeyspaceNames(ctx context.Context, cell string) ([]string, error) {
+func (server *ResilientServer) GetSrvKeyspaceNames(ctx context.Context, cell string, staleOK bool) ([]string, error) {
 	server.counts.Add(queryCategory, 1)
 
 	// find the entry in the cache, add it if not there
@@ -251,11 +261,15 @@ func (server *ResilientServer) GetSrvKeyspaceNames(ctx context.Context, cell str
 	entry.mutex.Lock()
 	defer entry.mutex.Unlock()
 
-	cacheValid := entry.value != nil && time.Since(entry.insertionTime) < server.cacheTTL
+	cacheValid := entry.value != nil && (time.Since(entry.insertionTime) < server.cacheTTL)
+	if !cacheValid && staleOK {
+		// Only allow stale results for a bounded period
+		cacheValid = entry.value != nil && (time.Since(entry.insertionTime) < (server.cacheTTL + 2*server.cacheRefresh))
+	}
 	shouldRefresh := time.Since(entry.lastQueryTime) > server.cacheRefresh
 
 	// If it is not time to check again, then return either the cached
-	// value or the cached error but don't ask consul again.
+	// value or the cached error but don't ask topo again.
 	if !shouldRefresh {
 		if cacheValid {
 			return entry.value, nil
@@ -271,8 +285,14 @@ func (server *ResilientServer) GetSrvKeyspaceNames(ctx context.Context, cell str
 		entry.refreshingChan = make(chan struct{})
 		entry.lastQueryTime = time.Now()
 		go func() {
-			result, err := server.topoServer.GetSrvKeyspaceNames(ctx, cell)
-
+			defer func() {
+				if err := recover(); err != nil {
+					log.Errorf("GetSrvKeyspaceNames uncaught panic, cell :%v, err :%v)", cell, err)
+				}
+			}()
+			newCtx, cancel := context.WithTimeout(ctx, *srvTopoTimeout)
+			defer cancel()
+			result, err := server.topoServer.GetSrvKeyspaceNames(newCtx, cell)
 			entry.mutex.Lock()
 			defer func() {
 				close(entry.refreshingChan)
@@ -283,12 +303,15 @@ func (server *ResilientServer) GetSrvKeyspaceNames(ctx context.Context, cell str
 			if err == nil {
 				// save the value we got and the current time in the cache
 				entry.insertionTime = time.Now()
+				// Avoid a tiny race if TTL == refresh time (the default)
+				entry.lastQueryTime = entry.insertionTime
 				entry.value = result
 			} else {
 				server.counts.Add(errorCategory, 1)
 				if entry.insertionTime.IsZero() {
 					log.Errorf("GetSrvKeyspaceNames(%v, %v) failed: %v (no cached value, caching and returning error)", ctx, cell, err)
-
+				} else if newCtx.Err() == context.DeadlineExceeded {
+					log.Errorf("GetSrvKeyspaceNames(%v, %v) failed: %v (request timeout), (keeping cached value: %v)", ctx, cell, err, entry.value)
 				} else if entry.value != nil && time.Since(entry.insertionTime) < server.cacheTTL {
 					server.counts.Add(cachedCategory, 1)
 					log.Warningf("GetSrvKeyspaceNames(%v, %v) failed: %v (keeping cached value: %v)", ctx, cell, err, entry.value)
@@ -300,7 +323,7 @@ func (server *ResilientServer) GetSrvKeyspaceNames(ctx context.Context, cell str
 			}
 
 			entry.lastError = err
-			entry.lastErrorCtx = ctx
+			entry.lastErrorCtx = newCtx
 		}()
 	}
 
@@ -446,7 +469,9 @@ func (server *ResilientServer) watchSrvKeyspace(callerCtx context.Context, entry
 		server.counts.Add(errorCategory, 1)
 		log.Errorf("Initial WatchSrvKeyspace failed for %v/%v: %v", cell, keyspace, current.Err)
 
-		if time.Since(entry.lastValueTime) > server.cacheTTL {
+		// This watcher will able to continue to return the last value till it is not able to connect to the topo server even if the cache TTL is reached.
+		_, netErr := current.Err.(*url.Error)
+		if !netErr && time.Since(entry.lastValueTime) > server.cacheTTL {
 			log.Errorf("WatchSrvKeyspace clearing cached entry for %v/%v", cell, keyspace)
 			entry.value = nil
 		}
@@ -518,6 +543,12 @@ func (server *ResilientServer) WatchSrvVSchema(ctx context.Context, cell string,
 	wg.Add(1)
 
 	go func() {
+		defer func() {
+			if err := recover(); err != nil {
+				log.Errorf("WatchSrvVSchema  uncaught panic, cell :%v, err :%v)", cell, err)
+			}
+		}()
+
 		foundFirstValue := false
 
 		for {

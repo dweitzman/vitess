@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -113,14 +113,14 @@ func analyze(line []byte) {
 }
 
 func formatWithBind(buf *sqlparser.TrackedBuffer, node sqlparser.SQLNode) {
-	v, ok := node.(*sqlparser.SQLVal)
+	v, ok := node.(*sqlparser.Literal)
 	if !ok {
 		node.Format(buf)
 		return
 	}
 	switch v.Type {
 	case sqlparser.StrVal, sqlparser.HexVal, sqlparser.IntVal:
-		buf.WriteArg(fmt.Sprintf(":v%d", bindIndex))
+		buf.WriteArg(":", fmt.Sprintf("v%d", bindIndex))
 		bindIndex++
 	default:
 		node.Format(buf)

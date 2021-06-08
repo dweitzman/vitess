@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,18 +19,38 @@ package sqltypes
 import (
 	"reflect"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/proto"
+
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
 
 // Result represents a query result.
 type Result struct {
-	Fields       []*querypb.Field      `json:"fields"`
-	RowsAffected uint64                `json:"rows_affected"`
-	InsertID     uint64                `json:"insert_id"`
-	Rows         [][]Value             `json:"rows"`
-	Extras       *querypb.ResultExtras `json:"extras"`
+	Fields              []*querypb.Field `json:"fields"`
+	RowsAffected        uint64           `json:"rows_affected"`
+	InsertID            uint64           `json:"insert_id"`
+	Rows                [][]Value        `json:"rows"`
+	SessionStateChanges string           `json:"session_state_changes"`
+	StatusFlags         uint16           `json:"status_flags"`
 }
+
+//goland:noinspection GoUnusedConst
+const (
+	ServerStatusInTrans            = 0x0001
+	ServerStatusAutocommit         = 0x0002
+	ServerMoreResultsExists        = 0x0008
+	ServerStatusNoGoodIndexUsed    = 0x0010
+	ServerStatusNoIndexUsed        = 0x0020
+	ServerStatusCursorExists       = 0x0040
+	ServerStatusLastRowSent        = 0x0080
+	ServerStatusDbDropped          = 0x0100
+	ServerStatusNoBackslashEscapes = 0x0200
+	ServerStatusMetadataChanged    = 0x0400
+	ServerQueryWasSlow             = 0x0800
+	ServerPsOutParams              = 0x1000
+	ServerStatusInTransReadonly    = 0x2000
+	ServerSessionStateChanged      = 0x4000
+)
 
 // ResultStream is an interface for receiving Result. It is used for
 // RPC interfaces.
@@ -53,6 +73,17 @@ func (result *Result) Repair(fields []*querypb.Field) {
 	}
 }
 
+// ReplaceKeyspace replaces all the non-empty Database identifiers in the result
+// set with the given keyspace name
+func (result *Result) ReplaceKeyspace(keyspace string) {
+	// Change database name in mysql output to the keyspace name
+	for _, f := range result.Fields {
+		if f.Database != "" {
+			f.Database = keyspace
+		}
+	}
+}
+
 // Copy creates a deep copy of Result.
 func (result *Result) Copy() *Result {
 	out := &Result{
@@ -60,30 +91,15 @@ func (result *Result) Copy() *Result {
 		RowsAffected: result.RowsAffected,
 	}
 	if result.Fields != nil {
-		fieldsp := make([]*querypb.Field, len(result.Fields))
-		fields := make([]querypb.Field, len(result.Fields))
+		out.Fields = make([]*querypb.Field, len(result.Fields))
 		for i, f := range result.Fields {
-			fields[i] = *f
-			fieldsp[i] = &fields[i]
+			out.Fields[i] = proto.Clone(f).(*querypb.Field)
 		}
-		out.Fields = fieldsp
 	}
 	if result.Rows != nil {
 		out.Rows = make([][]Value, 0, len(result.Rows))
 		for _, r := range result.Rows {
 			out.Rows = append(out.Rows, CopyRow(r))
-		}
-	}
-	if result.Extras != nil {
-		out.Extras = &querypb.ResultExtras{
-			Fresher: result.Extras.Fresher,
-		}
-		if result.Extras.EventToken != nil {
-			out.Extras.EventToken = &querypb.EventToken{
-				Timestamp: result.Extras.EventToken.Timestamp,
-				Shard:     result.Extras.EventToken.Shard,
-				Position:  result.Extras.EventToken.Position,
-			}
 		}
 	}
 	return out
@@ -118,18 +134,6 @@ func (result *Result) Truncate(l int) *Result {
 			out.Rows = append(out.Rows, r[:l])
 		}
 	}
-	if result.Extras != nil {
-		out.Extras = &querypb.ResultExtras{
-			Fresher: result.Extras.Fresher,
-		}
-		if result.Extras.EventToken != nil {
-			out.Extras.EventToken = &querypb.EventToken{
-				Timestamp: result.Extras.EventToken.Timestamp,
-				Shard:     result.Extras.EventToken.Shard,
-				Position:  result.Extras.EventToken.Position,
-			}
-		}
-	}
 	return out
 }
 
@@ -158,12 +162,11 @@ func (result *Result) Equal(other *Result) bool {
 		return false
 	}
 
-	// Compare Fields, RowsAffected, InsertID, Rows, Extras.
+	// Compare Fields, RowsAffected, InsertID, Rows.
 	return FieldsEqual(result.Fields, other.Fields) &&
 		result.RowsAffected == other.RowsAffected &&
 		result.InsertID == other.InsertID &&
-		reflect.DeepEqual(result.Rows, other.Rows) &&
-		proto.Equal(result.Extras, other.Extras)
+		reflect.DeepEqual(result.Rows, other.Rows)
 }
 
 // ResultsEqual compares two arrays of Result.
@@ -232,7 +235,7 @@ func (result *Result) StripMetadata(incl querypb.ExecuteOptions_IncludedFields) 
 // to another result.Note currently it doesn't handle cases like
 // if two results have different fields.We will enhance this function.
 func (result *Result) AppendResult(src *Result) {
-	if src.RowsAffected == 0 && len(src.Fields) == 0 {
+	if src.RowsAffected == 0 && len(src.Rows) == 0 && len(src.Fields) == 0 {
 		return
 	}
 	if result.Fields == nil {
@@ -242,30 +245,20 @@ func (result *Result) AppendResult(src *Result) {
 	if src.InsertID != 0 {
 		result.InsertID = src.InsertID
 	}
-	if len(result.Rows) == 0 {
-		// we haven't gotten any result yet, just save the new extras.
-		result.Extras = src.Extras
-	} else {
-		// Merge the EventTokens / Fresher flags within Extras.
-		if src.Extras == nil {
-			// We didn't get any from innerq. Have to clear any
-			// we'd have gotten already.
-			if result.Extras != nil {
-				result.Extras.EventToken = nil
-				result.Extras.Fresher = false
-			}
-		} else {
-			// We may have gotten an EventToken from
-			// innerqr.  If we also got one earlier, merge
-			// it. If we didn't get one earlier, we
-			// discard the new one.
-			if result.Extras != nil {
-				// Note if any of the two is nil, we get nil.
-				result.Extras.EventToken = EventTokenMinimum(result.Extras.EventToken, src.Extras.EventToken)
-
-				result.Extras.Fresher = result.Extras.Fresher && src.Extras.Fresher
-			}
-		}
-	}
 	result.Rows = append(result.Rows, src.Rows...)
+}
+
+// Named returns a NamedResult based on this struct
+func (result *Result) Named() *NamedResult {
+	return ToNamedResult(result)
+}
+
+// IsMoreResultsExists returns true if the status flag has SERVER_MORE_RESULTS_EXISTS set
+func (result *Result) IsMoreResultsExists() bool {
+	return result.StatusFlags&ServerMoreResultsExists == ServerMoreResultsExists
+}
+
+// IsInTransaction returns true if the status flag has SERVER_STATUS_IN_TRANS set
+func (result *Result) IsInTransaction() bool {
+	return result.StatusFlags&ServerStatusInTrans == ServerStatusInTrans
 }

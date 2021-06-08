@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,9 +23,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/encoding/prototext"
+
+	"context"
+
 	"github.com/olekukonko/tablewriter"
-	"golang.org/x/net/context"
 
 	"vitess.io/vitess/go/vt/logutil"
 	"vitess.io/vitess/go/vt/throttler"
@@ -35,11 +37,13 @@ import (
 	throttlerdatapb "vitess.io/vitess/go/vt/proto/throttlerdata"
 )
 
+const (
+	throttlerGroupName = "Resharding Throttler"
+	shortTimeout       = 15 * time.Second
+)
+
 // This file contains the commands to control the throttler which is used during
 // resharding (vtworker) and by filtered replication (vttablet).
-
-const throttlerGroupName = "Resharding Throttler"
-const shortTimeout = 15 * time.Second
 
 func init() {
 	addCommandGroup(throttlerGroupName)
@@ -199,7 +203,8 @@ func commandGetThrottlerConfiguration(ctx context.Context, wr *wrangler.Wrangler
 	table.SetAutoWrapText(false)
 	table.SetHeader([]string{"Name", "Configuration (protobuf text, fields with a zero value are omitted)"})
 	for name, c := range configurations {
-		table.Append([]string{name, proto.CompactTextString(c)})
+		pcfg, _ := prototext.Marshal(c)
+		table.Append([]string{name, string(pcfg)})
 	}
 	table.Render()
 	wr.Logger().Printf("%d active throttler(s) on server '%v'.\n", len(configurations), *server)
@@ -223,8 +228,8 @@ func commandUpdateThrottlerConfiguration(ctx context.Context, wr *wrangler.Wrang
 
 	protoText := subFlags.Arg(0)
 	configuration := &throttlerdatapb.Configuration{}
-	if err := proto.UnmarshalText(protoText, configuration); err != nil {
-		return fmt.Errorf("Failed to unmarshal the configuration protobuf text (%v) into a protobuf instance: %v", protoText, err)
+	if err := prototext.Unmarshal([]byte(protoText), configuration); err != nil {
+		return fmt.Errorf("failed to unmarshal the configuration protobuf text (%v) into a protobuf instance: %v", protoText, err)
 	}
 
 	// Connect to the server.

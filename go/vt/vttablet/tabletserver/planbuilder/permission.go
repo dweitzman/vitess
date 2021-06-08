@@ -1,5 +1,5 @@
 /*
-Copyright 2018 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -47,15 +47,19 @@ func BuildPermissions(stmt sqlparser.Statement) []Permission {
 	case *sqlparser.Delete:
 		permissions = buildTableExprsPermissions(node.TableExprs, tableacl.WRITER, permissions)
 		permissions = buildSubqueryPermissions(node, tableacl.READER, permissions)
-	case *sqlparser.Set, *sqlparser.Show, *sqlparser.OtherRead:
-		// no-op
-	case *sqlparser.DDL:
+	case sqlparser.DDLStatement:
 		for _, t := range node.AffectedTables() {
 			permissions = buildTableNamePermissions(t, tableacl.ADMIN, permissions)
 		}
-	case *sqlparser.OtherAdmin:
-		// no op
-	case *sqlparser.Begin, *sqlparser.Commit, *sqlparser.Rollback:
+	case *sqlparser.AlterMigration, *sqlparser.RevertMigration:
+		permissions = []Permission{} // TODO(shlomi) what are the correct permissions here? Table is unknown
+	case *sqlparser.Flush:
+		for _, t := range node.TableNames {
+			permissions = buildTableNamePermissions(t, tableacl.ADMIN, permissions)
+		}
+	case *sqlparser.OtherAdmin, *sqlparser.CallProc, *sqlparser.Begin, *sqlparser.Commit, *sqlparser.Rollback,
+		*sqlparser.Load, *sqlparser.Savepoint, *sqlparser.Release, *sqlparser.SRollback, *sqlparser.Set, *sqlparser.Show,
+		*sqlparser.OtherRead, sqlparser.Explain:
 		// no op
 	default:
 		panic(fmt.Errorf("BUG: unexpected statement type: %T", node))
@@ -92,7 +96,7 @@ func buildTableExprPermissions(node sqlparser.TableExpr, role tableacl.Role, per
 		switch node := node.Expr.(type) {
 		case sqlparser.TableName:
 			permissions = buildTableNamePermissions(node, role, permissions)
-		case *sqlparser.Subquery:
+		case *sqlparser.DerivedTable:
 			permissions = buildSubqueryPermissions(node.Select, role, permissions)
 		}
 	case *sqlparser.ParenTableExpr:

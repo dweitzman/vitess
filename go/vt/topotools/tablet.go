@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,7 +37,9 @@ import (
 	"errors"
 	"fmt"
 
-	"golang.org/x/net/context"
+	"context"
+
+	"google.golang.org/protobuf/proto"
 
 	"vitess.io/vitess/go/vt/hook"
 	"vitess.io/vitess/go/vt/log"
@@ -46,6 +48,7 @@ import (
 
 	querypb "vitess.io/vitess/go/vt/proto/query"
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	"vitess.io/vitess/go/vt/proto/vttime"
 )
 
 // ConfigureTabletHook configures the right parameters for a hook
@@ -61,11 +64,27 @@ func ConfigureTabletHook(hk *hook.Hook, tabletAlias *topodatapb.TabletAlias) {
 // transitions need to be forced from time to time.
 //
 // If successful, the updated tablet record is returned.
-func ChangeType(ctx context.Context, ts *topo.Server, tabletAlias *topodatapb.TabletAlias, newType topodatapb.TabletType) (*topodatapb.Tablet, error) {
-	return ts.UpdateTabletFields(ctx, tabletAlias, func(tablet *topodatapb.Tablet) error {
+func ChangeType(ctx context.Context, ts *topo.Server, tabletAlias *topodatapb.TabletAlias, newType topodatapb.TabletType, masterTermStartTime *vttime.Time) (*topodatapb.Tablet, error) {
+	var result *topodatapb.Tablet
+	// Always clear out the master timestamp if not master.
+	if newType != topodatapb.TabletType_MASTER {
+		masterTermStartTime = nil
+	}
+	_, err := ts.UpdateTabletFields(ctx, tabletAlias, func(tablet *topodatapb.Tablet) error {
+		// Save the most recent tablet value so we can return it
+		// either if the update succeeds or if no update is needed.
+		result = tablet
+		if tablet.Type == newType && proto.Equal(tablet.MasterTermStartTime, masterTermStartTime) {
+			return topo.NewError(topo.NoUpdateNeeded, topoproto.TabletAliasString(tabletAlias))
+		}
 		tablet.Type = newType
+		tablet.MasterTermStartTime = masterTermStartTime
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // CheckOwnership returns nil iff the Hostname and port match on oldTablet and
@@ -82,6 +101,44 @@ func CheckOwnership(oldTablet, newTablet *topodatapb.Tablet) error {
 			oldTablet.Hostname, oldTablet.PortMap["vt"], newTablet.Hostname, newTablet.PortMap["vt"])
 	}
 	return nil
+}
+
+// IsPrimaryTablet is a helper function to determine whether the current tablet
+// is a primary before we allow its tablet record to be deleted. The canonical
+// way to determine the only true primary in a shard is to list all the tablets
+// and find the one with the highest MasterTermStartTime among the ones that
+// claim to be master.
+//
+// We err on the side of caution here, i.e. we should never return false for
+// a true primary tablet, but it is okay to return true for a tablet that isn't
+// the true primary. This can occur if someone issues a DeleteTablet while
+// the system is in transition (a reparenting event is in progress and parts of
+// the topo have not yet been updated).
+func IsPrimaryTablet(ctx context.Context, ts *topo.Server, ti *topo.TabletInfo) (bool, error) {
+	// Tablet record claims to be non-master, we believe it
+	if ti.Type != topodatapb.TabletType_MASTER {
+		return false, nil
+	}
+
+	si, err := ts.GetShard(ctx, ti.Keyspace, ti.Shard)
+	if err != nil {
+		// strictly speaking it isn't correct to return false here, the tablet
+		// status is unknown
+		return false, err
+	}
+
+	// Tablet record claims to be master, and shard record matches
+	if topoproto.TabletAliasEqual(si.MasterAlias, ti.Tablet.Alias) {
+		return true, nil
+	}
+
+	// Shard record has another tablet as master, so check MasterTermStartTime
+	// If tablet record's MasterTermStartTime is later than the one in the shard
+	// record, then the tablet is master
+	tabletMTST := ti.GetMasterTermStartTime()
+	shardMTST := si.GetMasterTermStartTime()
+
+	return tabletMTST.After(shardMTST), nil
 }
 
 // DeleteTablet removes a tablet record from the topology:

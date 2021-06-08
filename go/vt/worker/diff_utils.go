@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,21 +20,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
-	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"google.golang.org/protobuf/proto"
 
+	"vitess.io/vitess/go/vt/vtgate/evalengine"
+
+	"vitess.io/vitess/go/vt/proto/vtrpc"
 	"vitess.io/vitess/go/vt/vterrors"
 	"vitess.io/vitess/go/vt/vttablet/tmclient"
 	"vitess.io/vitess/go/vt/wrangler"
 
-	"golang.org/x/net/context"
+	"context"
 
-	"github.com/golang/protobuf/proto"
 	"vitess.io/vitess/go/sqlescape"
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/grpcclient"
@@ -120,7 +121,7 @@ func NewTransactionalQueryResultReaderForTablet(ctx context.Context, ts *topo.Se
 	// read the columns, or grab the error
 	cols, err := stream.Recv()
 	if err != nil {
-		return nil, fmt.Errorf("Cannot read Fields for query '%v': %v", sql, err)
+		return nil, vterrors.Wrapf(err, "cannot read Fields for query '%v'", sql)
 	}
 
 	return &QueryResultReader{
@@ -128,27 +129,6 @@ func NewTransactionalQueryResultReaderForTablet(ctx context.Context, ts *topo.Se
 		fields: cols.Fields,
 		conn:   conn,
 	}, nil
-}
-
-// RollbackTransaction rolls back the transaction
-func RollbackTransaction(ctx context.Context, ts *topo.Server, tabletAlias *topodatapb.TabletAlias, txID int64) error {
-	shortCtx, cancel := context.WithTimeout(ctx, *remoteActionsTimeout)
-	tablet, err := ts.GetTablet(shortCtx, tabletAlias)
-	cancel()
-	if err != nil {
-		return err
-	}
-
-	conn, err := tabletconn.GetDialer()(tablet.Tablet, grpcclient.FailFast(false))
-	if err != nil {
-		return err
-	}
-
-	return conn.Rollback(ctx, &querypb.Target{
-		Keyspace:   tablet.Tablet.Keyspace,
-		Shard:      tablet.Tablet.Shard,
-		TabletType: tablet.Tablet.Type,
-	}, txID)
 }
 
 // Next returns the next result on the stream. It implements ResultReader.
@@ -345,7 +325,7 @@ func TableScanByKeyRange(ctx context.Context, log logutil.Logger, ts *topo.Serve
 			}
 		}
 	default:
-		return nil, fmt.Errorf("Unsupported ShardingColumnType: %v", shardingColumnType)
+		return nil, vterrors.Errorf(vtrpc.Code_FAILED_PRECONDITION, "unsupported ShardingColumnType: %v", shardingColumnType)
 	}
 
 	sql := fmt.Sprintf("SELECT %v FROM %v %v", strings.Join(escapeAll(orderedColumns(td)), ", "), sqlescape.EscapeID(td.Name), where)
@@ -358,7 +338,7 @@ func TableScanByKeyRange(ctx context.Context, log logutil.Logger, ts *topo.Serve
 
 // ErrStoppedRowReader is returned by RowReader.Next() when
 // StopAfterCurrentResult() and it finished the current result.
-var ErrStoppedRowReader = errors.New("RowReader won't advance to the next Result because StopAfterCurrentResult() was called")
+var ErrStoppedRowReader = vterrors.New(vtrpc.Code_ABORTED, "RowReader won't advance to the next Result because StopAfterCurrentResult() was called")
 
 // RowReader returns individual rows from a ResultReader.
 type RowReader struct {
@@ -454,7 +434,7 @@ func (dr *DiffReport) HasDifferences() bool {
 // ComputeQPS fills in processingQPS
 func (dr *DiffReport) ComputeQPS() {
 	if dr.processedRows > 0 {
-		dr.processingQPS = int(time.Duration(dr.processedRows) * time.Second / time.Now().Sub(dr.startingTime))
+		dr.processingQPS = int(time.Duration(dr.processedRows) * time.Second / time.Since(dr.startingTime))
 	}
 }
 
@@ -482,8 +462,8 @@ func RowsEqual(left, right []sqltypes.Value) int {
 // TODO: This can panic if types for left and right don't match.
 func CompareRows(fields []*querypb.Field, compareCount int, left, right []sqltypes.Value) (int, error) {
 	for i := 0; i < compareCount; i++ {
-		lv, _ := sqltypes.ToNative(left[i])
-		rv, _ := sqltypes.ToNative(right[i])
+		lv, _ := evalengine.ToNative(left[i])
+		rv, _ := evalengine.ToNative(right[i])
 		switch l := lv.(type) {
 		case int64:
 			r := rv.(int64)
@@ -510,7 +490,7 @@ func CompareRows(fields []*querypb.Field, compareCount int, left, right []sqltyp
 			r := rv.([]byte)
 			return bytes.Compare(l, r), nil
 		default:
-			return 0, fmt.Errorf("Unsupported type %T returned by mysql.proto.Convert", l)
+			return 0, vterrors.Errorf(vtrpc.Code_FAILED_PRECONDITION, "unsupported type %T returned by mysql.proto.Convert", l)
 		}
 	}
 	return 0, nil
@@ -530,11 +510,11 @@ func NewRowDiffer(left, right ResultReader, tableDefinition *tabletmanagerdatapb
 	leftFields := left.Fields()
 	rightFields := right.Fields()
 	if len(leftFields) != len(rightFields) {
-		return nil, fmt.Errorf("[table=%v] Cannot diff inputs with different types", tableDefinition.Name)
+		return nil, vterrors.Errorf(vtrpc.Code_FAILED_PRECONDITION, "[table=%v] Cannot diff inputs with different types", tableDefinition.Name)
 	}
 	for i, field := range leftFields {
 		if field.Type != rightFields[i].Type {
-			return nil, fmt.Errorf("[table=%v] Cannot diff inputs with different types: field %v types are %v and %v", tableDefinition.Name, i, field.Type, rightFields[i].Type)
+			return nil, vterrors.Errorf(vtrpc.Code_FAILED_PRECONDITION, "[table=%v] Cannot diff inputs with different types: field %v types are %v and %v", tableDefinition.Name, i, field.Type, rightFields[i].Type)
 		}
 	}
 	return &RowDiffer{
@@ -580,22 +560,22 @@ func (rd *RowDiffer) Go(log logutil.Logger) (dr DiffReport, err error) {
 
 			// drain right, update count
 			log.Errorf("Draining extra row(s) found on the right starting with: %v", right)
-			if count, err := rd.right.Drain(); err != nil {
+			var count int
+			if count, err = rd.right.Drain(); err != nil {
 				return dr, err
-			} else {
-				dr.extraRowsRight += 1 + count
 			}
+			dr.extraRowsRight += 1 + count
 			return
 		}
 		if right == nil {
 			// no more rows from the right
 			// we know we have rows from left, drain, update count
 			log.Errorf("Draining extra row(s) found on the left starting with: %v", left)
-			if count, err := rd.left.Drain(); err != nil {
+			var count int
+			if count, err = rd.left.Drain(); err != nil {
 				return dr, err
-			} else {
-				dr.extraRowsLeft += 1 + count
 			}
+			dr.extraRowsLeft += 1 + count
 			return
 		}
 
@@ -660,13 +640,13 @@ func createTransactions(ctx context.Context, numberOfScanners int, wr *wrangler.
 	scanners := make([]int64, numberOfScanners)
 	for i := 0; i < numberOfScanners; i++ {
 
-		tx, err := queryService.Begin(ctx, target, &query.ExecuteOptions{
+		tx, _, err := queryService.Begin(ctx, target, &query.ExecuteOptions{
 			// Make sure our tx is not killed by tx sniper
 			Workload:             query.ExecuteOptions_DBA,
 			TransactionIsolation: query.ExecuteOptions_CONSISTENT_SNAPSHOT_READ_ONLY,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("could not open transaction on %v\n%v", topoproto.TabletAliasString(tabletInfo.Alias), err)
+			return nil, vterrors.Wrapf(err, "could not open transaction on %v", topoproto.TabletAliasString(tabletInfo.Alias))
 		}
 
 		// Remember to rollback the transactions
@@ -675,7 +655,8 @@ func createTransactions(ctx context.Context, numberOfScanners int, wr *wrangler.
 			if err != nil {
 				return err
 			}
-			return queryService.Rollback(ctx, target, tx)
+			_, err = queryService.Rollback(ctx, target, tx)
+			return err
 		})
 
 		scanners[i] = tx
@@ -725,7 +706,7 @@ func CreateConsistentTableScanners(ctx context.Context, tablet *topo.TabletInfo,
 		return nil, "", err
 	}
 
-	queryService, err := tabletconn.GetDialer()(tablet.Tablet, true)
+	queryService, _ := tabletconn.GetDialer()(tablet.Tablet, true)
 	defer queryService.Close(ctx)
 
 	scanners := make([]TableScanner, numberOfScanners)
@@ -755,7 +736,7 @@ func CreateConsistentTransactions(ctx context.Context, tablet *topo.TabletInfo, 
 	// Lock all tables with a read lock to pause replication
 	err := tm.LockTables(ctx, tablet.Tablet)
 	if err != nil {
-		return nil, "", fmt.Errorf("could not lock tables on %v\n%v", topoproto.TabletAliasString(tablet.Tablet.Alias), err)
+		return nil, "", vterrors.Wrapf(err, "could not lock tables on %v", topoproto.TabletAliasString(tablet.Tablet.Alias))
 	}
 	defer func() {
 		tm := tmclient.NewTabletManagerClient()
@@ -768,16 +749,16 @@ func CreateConsistentTransactions(ctx context.Context, tablet *topo.TabletInfo, 
 	target := CreateTargetFrom(tablet.Tablet)
 
 	// Create transactions
-	queryService, err := tabletconn.GetDialer()(tablet.Tablet, true)
+	queryService, _ := tabletconn.GetDialer()(tablet.Tablet, true)
 	defer queryService.Close(ctx)
 	connections, err := createTransactions(ctx, numberOfScanners, wr, cleaner, queryService, target, tablet.Tablet)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create transactions on %v: %v", topoproto.TabletAliasString(tablet.Tablet.Alias), err)
+		return nil, "", vterrors.Wrapf(err, "failed to create transactions on %v", topoproto.TabletAliasString(tablet.Tablet.Alias))
 	}
 	wr.Logger().Infof("transactions created on %v", topoproto.TabletAliasString(tablet.Tablet.Alias))
 	executedGtid, err := tm.MasterPosition(ctx, tablet.Tablet)
 	if err != nil {
-		return nil, "", fmt.Errorf("could not read executed GTID set on %v\n%v", topoproto.TabletAliasString(tablet.Tablet.Alias), err)
+		return nil, "", vterrors.Wrapf(err, "could not read executed GTID set on %v", topoproto.TabletAliasString(tablet.Tablet.Alias))
 	}
 
 	return connections, executedGtid, nil

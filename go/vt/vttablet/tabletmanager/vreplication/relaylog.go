@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
+	"context"
 
 	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
 )
@@ -38,7 +38,6 @@ type relayLog struct {
 	curSize  int
 	items    [][]*binlogdatapb.VEvent
 	timedout bool
-	err      error
 	// canAccept is true if: curSize<=maxSize, len(items)<maxItems, and ctx is not Done.
 	canAccept sync.Cond
 	// hasItems is true if len(items)>0, ctx is not Done, and interuptFetch is false.
@@ -65,6 +64,7 @@ func newRelayLog(ctx context.Context, maxItems, maxSize int) *relayLog {
 	return rl
 }
 
+// Send writes events to the relay log
 func (rl *relayLog) Send(events []*binlogdatapb.VEvent) error {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
@@ -84,6 +84,7 @@ func (rl *relayLog) Send(events []*binlogdatapb.VEvent) error {
 	return nil
 }
 
+// Fetch returns all existing items in the relay log, and empties the log
 func (rl *relayLog) Fetch() ([][]*binlogdatapb.VEvent, error) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()

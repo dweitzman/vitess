@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@ func TestHistogram(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		h.Add(int64(i))
 	}
-	want := `{"1": 2, "5": 6, "inf": 10, "Count": 10, "Total": 45}`
+	want := `{"1": 2, "5": 4, "inf": 4, "Count": 10, "Total": 45}`
 	if h.String() != want {
 		t.Errorf("got %v, want %v", h.String(), want)
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,15 +23,19 @@ import (
 	"net"
 	"time"
 
-	"github.com/grpc-ecosystem/go-grpc-middleware"
-	"github.com/grpc-ecosystem/go-grpc-prometheus"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
+
+	"vitess.io/vitess/go/trace"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
-	"golang.org/x/net/context"
+	"context"
+
 	"vitess.io/vitess/go/vt/grpccommon"
+	"vitess.io/vitess/go/vt/grpcoptionaltls"
 	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/vttls"
 )
@@ -53,13 +57,18 @@ var (
 	GRPCPort = flag.Int("grpc_port", 0, "Port to listen on for gRPC calls")
 
 	// GRPCCert is the cert to use if TLS is enabled
-	GRPCCert = flag.String("grpc_cert", "", "certificate to use, requires grpc_key, enables TLS")
+	GRPCCert = flag.String("grpc_cert", "", "server certificate to use for gRPC connections, requires grpc_key, enables TLS")
 
 	// GRPCKey is the key to use if TLS is enabled
-	GRPCKey = flag.String("grpc_key", "", "key to use, requires grpc_cert, enables TLS")
+	GRPCKey = flag.String("grpc_key", "", "server private key to use for gRPC connections, requires grpc_cert, enables TLS")
 
 	// GRPCCA is the CA to use if TLS is enabled
-	GRPCCA = flag.String("grpc_ca", "", "ca to use, requires TLS, and enforces client cert check")
+	GRPCCA = flag.String("grpc_ca", "", "server CA to use for gRPC connections, requires TLS, and enforces client certificate check")
+
+	GRPCEnableOptionalTLS = flag.Bool("grpc_enable_optional_tls", false, "enable optional TLS mode when a server accepts both TLS and plain-text connections on the same port")
+
+	// GRPCServerCA if specified will combine server cert and server CA
+	GRPCServerCA = flag.String("grpc_server_ca", "", "path to server CA in PEM format, which will be combine with server cert, return full certificate chain to clients")
 
 	// GRPCAuth which auth plugin to use (at the moment now only static is supported)
 	GRPCAuth = flag.String("grpc_auth_mode", "", "Which auth plugin implementation to use (eg: static)")
@@ -77,15 +86,20 @@ var (
 
 	// GRPCInitialConnWindowSize ServerOption that sets window size for a connection.
 	// The lower bound for window size is 64K and any value smaller than that will be ignored.
-	GRPCInitialConnWindowSize = flag.Int("grpc_server_initial_conn_window_size", 0, "grpc server initial connection window size")
+	GRPCInitialConnWindowSize = flag.Int("grpc_server_initial_conn_window_size", 0, "gRPC server initial connection window size")
 
 	// GRPCInitialWindowSize ServerOption that sets window size for stream.
 	// The lower bound for window size is 64K and any value smaller than that will be ignored.
-	GRPCInitialWindowSize = flag.Int("grpc_server_initial_window_size", 0, "grpc server initial window size")
+	GRPCInitialWindowSize = flag.Int("grpc_server_initial_window_size", 0, "gRPC server initial window size")
 
 	// EnforcementPolicy MinTime that sets the keepalive enforcement policy on the server.
 	// This is the minimum amount of time a client should wait before sending a keepalive ping.
-	GRPCKeepAliveEnforcementPolicyMinTime = flag.Duration("grpc_server_keepalive_enforcement_policy_min_time", 5*time.Minute, "grpc server minimum keepalive time")
+	GRPCKeepAliveEnforcementPolicyMinTime = flag.Duration("grpc_server_keepalive_enforcement_policy_min_time", 10*time.Second, "gRPC server minimum keepalive time")
+
+	// EnforcementPolicy PermitWithoutStream - If true, server allows keepalive pings
+	// even when there are no active streams (RPCs). If false, and client sends ping when
+	// there are no active streams, server will send GOAWAY and close the connection.
+	GRPCKeepAliveEnforcementPolicyPermitWithoutStream = flag.Bool("grpc_server_keepalive_enforcement_policy_permit_without_stream", false, "gRPC server permit client keepalive pings even when there are no active streams (RPCs)")
 
 	authPlugin Authenticator
 )
@@ -117,13 +131,17 @@ func createGRPCServer() {
 
 	var opts []grpc.ServerOption
 	if GRPCPort != nil && *GRPCCert != "" && *GRPCKey != "" {
-		config, err := vttls.ServerConfig(*GRPCCert, *GRPCKey, *GRPCCA)
+		config, err := vttls.ServerConfig(*GRPCCert, *GRPCKey, *GRPCCA, *GRPCServerCA)
 		if err != nil {
 			log.Exitf("Failed to log gRPC cert/key/ca: %v", err)
 		}
 
 		// create the creds server options
 		creds := credentials.NewTLS(config)
+		if *GRPCEnableOptionalTLS {
+			log.Warning("Optional TLS is active. Plain-text connections will be accepted")
+			creds = grpcoptionaltls.New(creds)
+		}
 		opts = []grpc.ServerOption{grpc.Creds(creds)}
 	}
 	// Override the default max message size for both send and receive
@@ -148,7 +166,8 @@ func createGRPCServer() {
 	}
 
 	ep := keepalive.EnforcementPolicy{
-		MinTime: *GRPCKeepAliveEnforcementPolicyMinTime,
+		MinTime:             *GRPCKeepAliveEnforcementPolicyMinTime,
+		PermitWithoutStream: *GRPCKeepAliveEnforcementPolicyPermitWithoutStream,
 	}
 	opts = append(opts, grpc.KeepaliveEnforcementPolicy(ep))
 
@@ -169,7 +188,7 @@ func createGRPCServer() {
 
 // We can only set a ServerInterceptor once, so we chain multiple interceptors into one
 func interceptors() []grpc.ServerOption {
-	interceptors := &InterceptorBuilder{}
+	interceptors := &serverInterceptorBuilder{}
 
 	if *GRPCAuth != "" {
 		log.Infof("enabling auth plugin %v", *GRPCAuth)
@@ -186,13 +205,9 @@ func interceptors() []grpc.ServerOption {
 		interceptors.Add(grpc_prometheus.StreamServerInterceptor, grpc_prometheus.UnaryServerInterceptor)
 	}
 
-	if interceptors.NonEmpty() {
-		return []grpc.ServerOption{
-			grpc.StreamInterceptor(interceptors.StreamServerInterceptor),
-			grpc.UnaryInterceptor(interceptors.UnaryStreamInterceptor)}
-	} else {
-		return []grpc.ServerOption{}
-	}
+	trace.AddGrpcServerOptions(interceptors.Add)
+
+	return interceptors.Build()
 }
 
 func serveGRPC() {
@@ -218,7 +233,12 @@ func serveGRPC() {
 	//       runs all OnRun() hooks after createGRPCServer() and before
 	//       serveGRPC(). If this was not the case, the binary would crash with
 	//       the error "grpc: Server.RegisterService after Server.Serve".
-	go GRPCServer.Serve(listener)
+	go func() {
+		err := GRPCServer.Serve(listener)
+		if err != nil {
+			log.Exitf("Failed to start grpc server: %v", err)
+		}
+	}()
 
 	OnTermSync(func() {
 		log.Info("Initiated graceful stop of gRPC server")
@@ -280,22 +300,33 @@ func WrapServerStream(stream grpc.ServerStream) *WrappedServerStream {
 	return &WrappedServerStream{ServerStream: stream, WrappedContext: stream.Context()}
 }
 
-// InterceptorBuilder chains together multiple ServerInterceptors
-type InterceptorBuilder struct {
-	StreamServerInterceptor grpc.StreamServerInterceptor
-	UnaryStreamInterceptor  grpc.UnaryServerInterceptor
+// serverInterceptorBuilder chains together multiple ServerInterceptors
+type serverInterceptorBuilder struct {
+	streamInterceptors []grpc.StreamServerInterceptor
+	unaryInterceptors  []grpc.UnaryServerInterceptor
 }
 
-func (collector *InterceptorBuilder) Add(s grpc.StreamServerInterceptor, u grpc.UnaryServerInterceptor) {
-	if collector.StreamServerInterceptor == nil {
-		collector.StreamServerInterceptor = s
-		collector.UnaryStreamInterceptor = u
-	} else {
-		collector.StreamServerInterceptor = grpc_middleware.ChainStreamServer(collector.StreamServerInterceptor, s)
-		collector.UnaryStreamInterceptor = grpc_middleware.ChainUnaryServer(collector.UnaryStreamInterceptor, u)
+// Add adds interceptors to the builder
+func (collector *serverInterceptorBuilder) Add(s grpc.StreamServerInterceptor, u grpc.UnaryServerInterceptor) {
+	collector.streamInterceptors = append(collector.streamInterceptors, s)
+	collector.unaryInterceptors = append(collector.unaryInterceptors, u)
+}
+
+// AddUnary adds a single unary interceptor to the builder
+func (collector *serverInterceptorBuilder) AddUnary(u grpc.UnaryServerInterceptor) {
+	collector.unaryInterceptors = append(collector.unaryInterceptors, u)
+}
+
+// Build returns DialOptions to add to the grpc.Dial call
+func (collector *serverInterceptorBuilder) Build() []grpc.ServerOption {
+	log.Infof("Building interceptors with %d unary interceptors and %d stream interceptors", len(collector.unaryInterceptors), len(collector.streamInterceptors))
+	switch len(collector.unaryInterceptors) + len(collector.streamInterceptors) {
+	case 0:
+		return []grpc.ServerOption{}
+	default:
+		return []grpc.ServerOption{
+			grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(collector.unaryInterceptors...)),
+			grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(collector.streamInterceptors...)),
+		}
 	}
-}
-
-func (collector *InterceptorBuilder) NonEmpty() bool {
-	return collector.StreamServerInterceptor != nil
 }

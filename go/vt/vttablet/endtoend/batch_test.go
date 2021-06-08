@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,12 @@ package endtoend
 import (
 	"reflect"
 	"testing"
+
+	"vitess.io/vitess/go/mysql"
+
+	"vitess.io/vitess/go/test/utils"
+
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/sqltypes"
 	querypb "vitess.io/vitess/go/vt/proto/query"
@@ -75,7 +81,6 @@ func TestBatchRead(t *testing.T) {
 			Charset:      63,
 			Flags:        128,
 		}},
-		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
 			{
 				sqltypes.NewInt64(1),
@@ -84,6 +89,7 @@ func TestBatchRead(t *testing.T) {
 				sqltypes.NewVarBinary("fghi"),
 			},
 		},
+		StatusFlags: sqltypes.ServerStatusNoIndexUsed | sqltypes.ServerStatusAutocommit,
 	}
 	qr2 := sqltypes.Result{
 		Fields: []*querypb.Field{{
@@ -107,27 +113,23 @@ func TestBatchRead(t *testing.T) {
 			Charset:      63,
 			Flags:        49155,
 		}},
-		RowsAffected: 1,
 		Rows: [][]sqltypes.Value{
 			{
 				sqltypes.NewInt64(1),
 				sqltypes.NewInt32(2),
 			},
 		},
+		StatusFlags: sqltypes.ServerStatusAutocommit,
 	}
 	want := []sqltypes.Result{qr1, qr2}
 
 	qrl, err := client.ExecuteBatch(queries, false)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	if !reflect.DeepEqual(qrl, want) {
-		t.Errorf("ExecueBatch: \n%#v, want \n%#v", prettyPrintArr(qrl), prettyPrintArr(want))
-	}
+	require.NoError(t, err)
+	utils.MustMatch(t, want, qrl)
 }
 
 func TestBatchTransaction(t *testing.T) {
+
 	client := framework.NewClient()
 	queries := []*querypb.BoundQuery{{
 		Sql: "insert into vitess_test values(4, null, null, null)",
@@ -148,20 +150,14 @@ func TestBatchTransaction(t *testing.T) {
 
 	// Not in transaction, AsTransaction false
 	qrl, err := client.ExecuteBatch(queries, false)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(qrl[1].Rows, wantRows) {
 		t.Errorf("Rows: \n%#v, want \n%#v", qrl[1].Rows, wantRows)
 	}
 
 	// Not in transaction, AsTransaction true
 	qrl, err = client.ExecuteBatch(queries, true)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(qrl[1].Rows, wantRows) {
 		t.Errorf("Rows: \n%#v, want \n%#v", qrl[1].Rows, wantRows)
 	}
@@ -169,16 +165,10 @@ func TestBatchTransaction(t *testing.T) {
 	// In transaction, AsTransaction false
 	func() {
 		err = client.Begin(false)
-		if err != nil {
-			t.Error(err)
-			return
-		}
+		require.NoError(t, err)
 		defer client.Commit()
 		qrl, err = client.ExecuteBatch(queries, false)
-		if err != nil {
-			t.Error(err)
-			return
-		}
+		require.NoError(t, err)
 		if !reflect.DeepEqual(qrl[1].Rows, wantRows) {
 			t.Errorf("Rows: \n%#v, want \n%#v", qrl[1].Rows, wantRows)
 		}
@@ -187,15 +177,9 @@ func TestBatchTransaction(t *testing.T) {
 	// In transaction, AsTransaction true
 	func() {
 		err = client.Begin(false)
-		if err != nil {
-			t.Error(err)
-			return
-		}
+		require.NoError(t, err)
 		defer client.Rollback()
 		qrl, err = client.ExecuteBatch(queries, true)
-		want := "cannot start a new transaction in the scope of an existing one"
-		if err == nil || err.Error() != want {
-			t.Errorf("Error: %v, want %s", err, want)
-		}
+		require.EqualError(t, mysql.NewSQLErrorFromError(err), "You are not allowed to execute this command in a transaction (errno 1179) (sqlstate 25000)")
 	}()
 }

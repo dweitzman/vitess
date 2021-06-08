@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -21,11 +21,12 @@ import (
 	"net"
 	"os"
 	"path"
-	"reflect"
 	"strings"
 	"testing"
 
-	"golang.org/x/net/context"
+	"vitess.io/vitess/go/test/utils"
+
+	"context"
 
 	"vitess.io/vitess/go/vt/tlstest"
 	"vitess.io/vitess/go/vt/vttls"
@@ -36,14 +37,15 @@ import (
 func TestClearTextClientAuth(t *testing.T) {
 	th := &testHandler{}
 
-	authServer := NewAuthServerStatic()
-	authServer.Method = MysqlClearPassword
-	authServer.Entries["user1"] = []*AuthServerStaticEntry{
+	authServer := NewAuthServerStatic("", "", 0)
+	authServer.method = MysqlClearPassword
+	authServer.entries["user1"] = []*AuthServerStaticEntry{
 		{Password: "password1"},
 	}
+	defer authServer.close()
 
 	// Create the listener.
-	l, err := NewListener("tcp", ":0", authServer, th, 0, 0)
+	l, err := NewListener("tcp", ":0", authServer, th, 0, 0, false)
 	if err != nil {
 		t.Fatalf("NewListener failed: %v", err)
 	}
@@ -64,14 +66,14 @@ func TestClearTextClientAuth(t *testing.T) {
 
 	// Connection should fail, as server requires SSL for clear text auth.
 	ctx := context.Background()
-	conn, err := Connect(ctx, params)
+	_, err = Connect(ctx, params)
 	if err == nil || !strings.Contains(err.Error(), "Cannot use clear text authentication over non-SSL connections") {
 		t.Fatalf("unexpected connection error: %v", err)
 	}
 
 	// Change server side to allow clear text without auth.
-	l.AllowClearTextWithoutTLS = true
-	conn, err = Connect(ctx, params)
+	l.AllowClearTextWithoutTLS.Set(true)
+	conn, err := Connect(ctx, params)
 	if err != nil {
 		t.Fatalf("unexpected connection error: %v", err)
 	}
@@ -82,9 +84,7 @@ func TestClearTextClientAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteFetch failed: %v", err)
 	}
-	if !reflect.DeepEqual(result, selectRowsResult) {
-		t.Errorf("Got wrong result from ExecuteFetch(select rows): %v", result)
-	}
+	utils.MustMatch(t, result, selectRowsResult)
 
 	// Send a ComQuit to avoid the error message on the server side.
 	conn.writeComQuit()
@@ -95,13 +95,14 @@ func TestClearTextClientAuth(t *testing.T) {
 func TestSSLConnection(t *testing.T) {
 	th := &testHandler{}
 
-	authServer := NewAuthServerStatic()
-	authServer.Entries["user1"] = []*AuthServerStaticEntry{
+	authServer := NewAuthServerStatic("", "", 0)
+	authServer.entries["user1"] = []*AuthServerStaticEntry{
 		{Password: "password1"},
 	}
+	defer authServer.close()
 
 	// Create the listener, so we can get its host.
-	l, err := NewListener("tcp", ":0", authServer, th, 0, 0)
+	l, err := NewListener("tcp", ":0", authServer, th, 0, 0, false)
 	if err != nil {
 		t.Fatalf("NewListener failed: %v", err)
 	}
@@ -123,11 +124,12 @@ func TestSSLConnection(t *testing.T) {
 	serverConfig, err := vttls.ServerConfig(
 		path.Join(root, "server-cert.pem"),
 		path.Join(root, "server-key.pem"),
-		path.Join(root, "ca-cert.pem"))
+		path.Join(root, "ca-cert.pem"),
+		"")
 	if err != nil {
 		t.Fatalf("TLSServerConfig failed: %v", err)
 	}
-	l.TLSConfig = serverConfig
+	l.TLSConfig.Store(serverConfig)
 	go func() {
 		l.Accept()
 	}()
@@ -152,7 +154,7 @@ func TestSSLConnection(t *testing.T) {
 
 	// Make sure clear text auth works over SSL.
 	t.Run("ClearText", func(t *testing.T) {
-		authServer.Method = MysqlClearPassword
+		authServer.method = MysqlClearPassword
 		testSSLConnectionClearText(t, params)
 	})
 }
@@ -199,9 +201,7 @@ func testSSLConnectionBasics(t *testing.T, params *ConnParams) {
 	if err != nil {
 		t.Fatalf("ExecuteFetch failed: %v", err)
 	}
-	if !reflect.DeepEqual(result, selectRowsResult) {
-		t.Errorf("Got wrong result from ExecuteFetch(select rows): %v", result)
-	}
+	utils.MustMatch(t, result, selectRowsResult)
 
 	// Make sure this went through SSL.
 	result, err = conn.ExecuteFetch("ssl echo", 10000, true)

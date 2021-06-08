@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@ limitations under the License.
 package binlog
 
 import (
-	"fmt"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
+	"vitess.io/vitess/go/test/utils"
+
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
 	querypb "vitess.io/vitess/go/vt/proto/query"
@@ -28,14 +30,14 @@ import (
 
 var dmlErrorCases = []string{
 	"query",
-	"query /* _stream 10 (eid id name ) (null 1 'bmFtZQ==' ); */",
-	"query /* _stream _table_ eid id name ) (null 1 'bmFtZQ==' ); */",
-	"query /* _stream _table_ (10 id name ) (null 1 'bmFtZQ==' ); */",
-	"query /* _stream _table_ (eid id name  (null 1 'bmFtZQ==' ); */",
-	"query /* _stream _table_ (eid id name)  (null 'aaa' 'bmFtZQ==' ); */",
-	"query /* _stream _table_ (eid id name)  (null 'bmFtZQ==' ); */",
-	"query /* _stream _table_ (eid id name)  (null 1.1 'bmFtZQ==' ); */",
-	"query /* _stream _table_ (eid id name)  (null a 'bmFtZQ==' ); */",
+	"query /* _stream 10 (eid id `name` ) (null 1 'bmFtZQ==' ); */",
+	"query /* _stream _table_ eid id `name` ) (null 1 'bmFtZQ==' ); */",
+	"query /* _stream _table_ (10 id `name` ) (null 1 'bmFtZQ==' ); */",
+	"query /* _stream _table_ (eid id `name`  (null 1 'bmFtZQ==' ); */",
+	"query /* _stream _table_ (eid id `name`)  (null 'aaa' 'bmFtZQ==' ); */",
+	"query /* _stream _table_ (eid id `name`)  (null 'bmFtZQ==' ); */",
+	"query /* _stream _table_ (eid id `name`)  (null 1.1 'bmFtZQ==' ); */",
+	"query /* _stream _table_ (eid id `name`)  (null a 'bmFtZQ==' ); */",
 }
 
 func TestEventErrors(t *testing.T) {
@@ -90,9 +92,7 @@ func TestSetErrors(t *testing.T) {
 	}
 	before := binlogStreamerErrors.Counts()["EventStreamer"]
 	err := evs.transactionToEvent(nil, statements)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	got := binlogStreamerErrors.Counts()["EventStreamer"]
 	if got != before+1 {
 		t.Errorf("got: %v, want: %+v", got, before+1)
@@ -116,7 +116,7 @@ func TestDMLEvent(t *testing.T) {
 		{
 			Statement: &binlogdatapb.BinlogTransaction_Statement{
 				Category: binlogdatapb.BinlogTransaction_Statement_BL_INSERT,
-				Sql:      []byte("query /* _stream _table_ (eid id name)  (null 1 'bmFtZQ==' ) (null 18446744073709551615 'bmFtZQ==' ); */"),
+				Sql:      []byte("query /* _stream _table_ (eid id `name`)  (null 1 'bmFtZQ==' ) (null 18446744073709551615 'bmFtZQ==' ); */"),
 			},
 		},
 		{
@@ -135,34 +135,23 @@ func TestDMLEvent(t *testing.T) {
 			for _, statement := range event.Statements {
 				switch statement.Category {
 				case querypb.StreamEvent_Statement_DML:
-					want := `category:DML table_name:"_table_" primary_key_fields:<name:"eid" type:INT64 > primary_key_fields:<name:"id" type:UINT64 > primary_key_fields:<name:"name" type:VARBINARY > primary_key_values:<lengths:2 lengths:1 lengths:4 values:"101name" > primary_key_values:<lengths:2 lengths:20 lengths:4 values:"1118446744073709551615name" > `
-					got := fmt.Sprintf("%v", statement)
-					if got != want {
-						t.Errorf("got \n%s, want \n%s", got, want)
-					}
+					want := `category:DML table_name:"_table_" primary_key_fields:{name:"eid" type:INT64} primary_key_fields:{name:"id" type:UINT64} primary_key_fields:{name:"name" type:VARBINARY} primary_key_values:{lengths:2 lengths:1 lengths:4 values:"101name"} primary_key_values:{lengths:2 lengths:20 lengths:4 values:"1118446744073709551615name"}`
+					utils.MustMatchPB(t, want, statement)
 				case querypb.StreamEvent_Statement_Error:
-					want := `sql:"query" `
-					got := fmt.Sprintf("%v", statement)
-					if got != want {
-						t.Errorf("got %s, want %s", got, want)
-					}
+					want := `sql:"query"`
+					utils.MustMatchPB(t, want, statement)
 				default:
 					t.Errorf("unexpected: %#v", event)
 				}
 			}
 			// then test the position
-			want := `timestamp:1 position:"MariaDB/0-41983-20" `
-			got := fmt.Sprintf("%v", event.EventToken)
-			if got != want {
-				t.Errorf("got %s, want %s", got, want)
-			}
+			want := `timestamp:1 position:"MariaDB/0-41983-20"`
+			utils.MustMatchPB(t, want, event.EventToken)
 			return nil
 		},
 	}
 	err := evs.transactionToEvent(eventToken, statements)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestDDLEvent(t *testing.T) {
@@ -189,26 +178,18 @@ func TestDDLEvent(t *testing.T) {
 			for _, statement := range event.Statements {
 				switch statement.Category {
 				case querypb.StreamEvent_Statement_DDL:
-					want := `category:DDL sql:"DDL" `
-					got := fmt.Sprintf("%v", statement)
-					if got != want {
-						t.Errorf("got %s, want %s", got, want)
-					}
+					want := `category:DDL sql:"DDL"`
+					utils.MustMatchPB(t, want, statement)
 				default:
 					t.Errorf("unexpected: %#v", event)
 				}
 			}
 			// then test the position
-			want := `timestamp:1 position:"MariaDB/0-41983-20" `
-			got := fmt.Sprintf("%v", event.EventToken)
-			if got != want {
-				t.Errorf("got %s, want %s", got, want)
-			}
+			want := `timestamp:1 position:"MariaDB/0-41983-20"`
+			utils.MustMatchPB(t, want, event.EventToken)
 			return nil
 		},
 	}
 	err := evs.transactionToEvent(eventToken, statements)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 }

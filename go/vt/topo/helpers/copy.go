@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,10 @@ limitations under the License.
 package helpers
 
 import (
-	"golang.org/x/net/context"
+	"context"
+
+	"google.golang.org/protobuf/proto"
+
 	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/topo"
 
@@ -91,7 +94,7 @@ func CopyShards(ctx context.Context, fromTS, toTS *topo.Server) {
 				}
 			}
 			if _, err := toTS.UpdateShardFields(ctx, keyspace, shard, func(toSI *topo.ShardInfo) error {
-				*toSI.Shard = *si.Shard
+				toSI.Shard = proto.Clone(si.Shard).(*topodatapb.Shard)
 				return nil
 			}); err != nil {
 				log.Fatalf("UpdateShardFields(%v, %v): %v", keyspace, shard, err)
@@ -126,7 +129,7 @@ func CopyTablets(ctx context.Context, fromTS, toTS *topo.Server) {
 					// update the destination tablet
 					log.Warningf("tablet %v already exists, updating it", tabletAlias)
 					_, err = toTS.UpdateTabletFields(ctx, tabletAlias, func(t *topodatapb.Tablet) error {
-						*t = *ti.Tablet
+						proto.Merge(t, ti.Tablet)
 						return nil
 					})
 				}
@@ -146,6 +149,11 @@ func CopyShardReplications(ctx context.Context, fromTS, toTS *topo.Server) {
 		log.Fatalf("fromTS.GetKeyspaces: %v", err)
 	}
 
+	cells, err := fromTS.GetCellInfoNames(ctx)
+	if err != nil {
+		log.Fatalf("GetCellInfoNames(): %v", err)
+	}
+
 	for _, keyspace := range keyspaces {
 		shards, err := fromTS.GetShardNames(ctx, keyspace)
 		if err != nil {
@@ -153,14 +161,7 @@ func CopyShardReplications(ctx context.Context, fromTS, toTS *topo.Server) {
 		}
 
 		for _, shard := range shards {
-
-			// read the source shard to get the cells
-			si, err := fromTS.GetShard(ctx, keyspace, shard)
-			if err != nil {
-				log.Fatalf("GetShard(%v, %v): %v", keyspace, shard, err)
-			}
-
-			for _, cell := range si.Shard.Cells {
+			for _, cell := range cells {
 				sri, err := fromTS.GetShardReplication(ctx, cell, keyspace, shard)
 				if err != nil {
 					log.Fatalf("GetShardReplication(%v, %v, %v): %v", cell, keyspace, shard, err)
@@ -168,12 +169,23 @@ func CopyShardReplications(ctx context.Context, fromTS, toTS *topo.Server) {
 				}
 
 				if err := toTS.UpdateShardReplicationFields(ctx, cell, keyspace, shard, func(oldSR *topodatapb.ShardReplication) error {
-					*oldSR = *sri.ShardReplication
+					proto.Merge(oldSR, sri.ShardReplication)
 					return nil
 				}); err != nil {
 					log.Warningf("UpdateShardReplicationFields(%v, %v, %v): %v", cell, keyspace, shard, err)
 				}
 			}
 		}
+	}
+}
+
+// CopyRoutingRules will create the routing rules in the destination topo.
+func CopyRoutingRules(ctx context.Context, fromTS, toTS *topo.Server) {
+	rr, err := fromTS.GetRoutingRules(ctx)
+	if err != nil {
+		log.Fatalf("GetRoutingRules: %v", err)
+	}
+	if err := toTS.SaveRoutingRules(ctx, rr); err != nil {
+		log.Errorf("SaveRoutingRules(%v): %v", rr, err)
 	}
 }

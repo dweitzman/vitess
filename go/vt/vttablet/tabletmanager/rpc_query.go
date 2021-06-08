@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@ limitations under the License.
 package tabletmanager
 
 import (
-	"golang.org/x/net/context"
+	"context"
+
+	"vitess.io/vitess/go/sqlescape"
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/log"
 
@@ -25,9 +27,9 @@ import (
 )
 
 // ExecuteFetchAsDba will execute the given query, possibly disabling binlogs and reload schema.
-func (agent *ActionAgent) ExecuteFetchAsDba(ctx context.Context, query []byte, dbName string, maxrows int, disableBinlogs bool, reloadSchema bool) (*querypb.QueryResult, error) {
+func (tm *TabletManager) ExecuteFetchAsDba(ctx context.Context, query []byte, dbName string, maxrows int, disableBinlogs bool, reloadSchema bool) (*querypb.QueryResult, error) {
 	// get a connection
-	conn, err := agent.MysqlDaemon.GetDbaConnection()
+	conn, err := tm.MysqlDaemon.GetDbaConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +46,7 @@ func (agent *ActionAgent) ExecuteFetchAsDba(ctx context.Context, query []byte, d
 	if dbName != "" {
 		// This execute might fail if db does not exist.
 		// Error is ignored because given query might create this database.
-		conn.ExecuteFetch("USE "+dbName, 1, false)
+		conn.ExecuteFetch("USE "+sqlescape.EscapeID(dbName), 1, false)
 	}
 
 	// run the query
@@ -61,7 +63,7 @@ func (agent *ActionAgent) ExecuteFetchAsDba(ctx context.Context, query []byte, d
 	}
 
 	if err == nil && reloadSchema {
-		reloadErr := agent.QueryServiceControl.ReloadSchema(ctx)
+		reloadErr := tm.QueryServiceControl.ReloadSchema(ctx)
 		if reloadErr != nil {
 			log.Errorf("failed to reload the schema %v", reloadErr)
 		}
@@ -70,9 +72,9 @@ func (agent *ActionAgent) ExecuteFetchAsDba(ctx context.Context, query []byte, d
 }
 
 // ExecuteFetchAsAllPrivs will execute the given query, possibly reloading schema.
-func (agent *ActionAgent) ExecuteFetchAsAllPrivs(ctx context.Context, query []byte, dbName string, maxrows int, reloadSchema bool) (*querypb.QueryResult, error) {
+func (tm *TabletManager) ExecuteFetchAsAllPrivs(ctx context.Context, query []byte, dbName string, maxrows int, reloadSchema bool) (*querypb.QueryResult, error) {
 	// get a connection
-	conn, err := agent.MysqlDaemon.GetAllPrivsConnection()
+	conn, err := tm.MysqlDaemon.GetAllPrivsConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -81,14 +83,14 @@ func (agent *ActionAgent) ExecuteFetchAsAllPrivs(ctx context.Context, query []by
 	if dbName != "" {
 		// This execute might fail if db does not exist.
 		// Error is ignored because given query might create this database.
-		conn.ExecuteFetch("USE "+dbName, 1, false)
+		conn.ExecuteFetch("USE "+sqlescape.EscapeID(dbName), 1, false)
 	}
 
 	// run the query
 	result, err := conn.ExecuteFetch(string(query), maxrows, true /*wantFields*/)
 
 	if err == nil && reloadSchema {
-		reloadErr := agent.QueryServiceControl.ReloadSchema(ctx)
+		reloadErr := tm.QueryServiceControl.ReloadSchema(ctx)
 		if reloadErr != nil {
 			log.Errorf("failed to reload the schema %v", reloadErr)
 		}
@@ -97,13 +99,22 @@ func (agent *ActionAgent) ExecuteFetchAsAllPrivs(ctx context.Context, query []by
 }
 
 // ExecuteFetchAsApp will execute the given query.
-func (agent *ActionAgent) ExecuteFetchAsApp(ctx context.Context, query []byte, maxrows int) (*querypb.QueryResult, error) {
+func (tm *TabletManager) ExecuteFetchAsApp(ctx context.Context, query []byte, maxrows int) (*querypb.QueryResult, error) {
 	// get a connection
-	conn, err := agent.MysqlDaemon.GetAppConnection(ctx)
+	conn, err := tm.MysqlDaemon.GetAppConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Recycle()
 	result, err := conn.ExecuteFetch(string(query), maxrows, true /*wantFields*/)
+	return sqltypes.ResultToProto3(result), err
+}
+
+// ExecuteQuery submits a new online DDL request
+func (tm *TabletManager) ExecuteQuery(ctx context.Context, query []byte, dbName string, maxrows int) (*querypb.QueryResult, error) {
+	// get the db name from the tablet
+	tablet := tm.Tablet()
+	target := &querypb.Target{Keyspace: tablet.Keyspace, Shard: tablet.Shard, TabletType: tablet.Type}
+	result, err := tm.QueryServiceControl.QueryService().Execute(ctx, target, string(query), nil, 0, 0, nil)
 	return sqltypes.ResultToProto3(result), err
 }

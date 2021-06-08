@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"vitess.io/vitess/go/vt/logutil"
 	"vitess.io/vitess/go/vt/mysqlctl/tmutils"
@@ -94,7 +94,7 @@ func TestSchemaManagerExecutorOpenFail(t *testing.T) {
 		[]string{"create table test_table (pk int);"}, false, false, false)
 	controller.SetKeyspace("unknown_keyspace")
 	wr := wrangler.New(logutil.NewConsoleLogger(), newFakeTopo(t), newFakeTabletManagerClient())
-	executor := NewTabletExecutor(wr, testWaitSlaveTimeout)
+	executor := NewTabletExecutor("TestSchemaManagerExecutorOpenFail", wr, testWaitReplicasTimeout)
 	ctx := context.Background()
 
 	err := Run(ctx, controller, executor)
@@ -107,7 +107,7 @@ func TestSchemaManagerExecutorExecuteFail(t *testing.T) {
 	controller := newFakeController(
 		[]string{"create table test_table (pk int);"}, false, false, false)
 	wr := wrangler.New(logutil.NewConsoleLogger(), newFakeTopo(t), newFakeTabletManagerClient())
-	executor := NewTabletExecutor(wr, testWaitSlaveTimeout)
+	executor := NewTabletExecutor("TestSchemaManagerExecutorExecuteFail", wr, testWaitReplicasTimeout)
 	ctx := context.Background()
 
 	err := Run(ctx, controller, executor)
@@ -138,7 +138,7 @@ func TestSchemaManagerRun(t *testing.T) {
 	fakeTmc.AddSchemaDefinition("vt_test_keyspace", &tabletmanagerdatapb.SchemaDefinition{})
 
 	wr := wrangler.New(logutil.NewConsoleLogger(), newFakeTopo(t), fakeTmc)
-	executor := NewTabletExecutor(wr, testWaitSlaveTimeout)
+	executor := NewTabletExecutor("TestSchemaManagerRun", wr, testWaitReplicasTimeout)
 
 	ctx := context.Background()
 	err := Run(ctx, controller, executor)
@@ -184,12 +184,12 @@ func TestSchemaManagerExecutorFail(t *testing.T) {
 	fakeTmc.AddSchemaDefinition("vt_test_keyspace", &tabletmanagerdatapb.SchemaDefinition{})
 	fakeTmc.EnableExecuteFetchAsDbaError = true
 	wr := wrangler.New(logutil.NewConsoleLogger(), newFakeTopo(t), fakeTmc)
-	executor := NewTabletExecutor(wr, testWaitSlaveTimeout)
+	executor := NewTabletExecutor("TestSchemaManagerExecutorFail", wr, testWaitReplicasTimeout)
 
 	ctx := context.Background()
 	err := Run(ctx, controller, executor)
 
-	if err == nil || !strings.Contains(err.Error(), "Schema change failed") {
+	if err == nil || !strings.Contains(err.Error(), "schema change failed") {
 		t.Fatalf("schema change should fail, but got err: %v", err)
 	}
 }
@@ -229,7 +229,7 @@ func TestSchemaManagerRegisterControllerFactory(t *testing.T) {
 
 func newFakeExecutor(t *testing.T) *TabletExecutor {
 	wr := wrangler.New(logutil.NewConsoleLogger(), newFakeTopo(t), newFakeTabletManagerClient())
-	return NewTabletExecutor(wr, testWaitSlaveTimeout)
+	return NewTabletExecutor("newFakeExecutor", wr, testWaitReplicasTimeout)
 }
 
 func newFakeTabletManagerClient() *fakeTabletManagerClient {

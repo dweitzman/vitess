@@ -1,3 +1,19 @@
+/*
+Copyright 2019 The Vitess Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 // Package opentsdb adds support for pushing stats to opentsdb.
 package opentsdb
 
@@ -71,30 +87,33 @@ type dataCollector struct {
 func Init(prefix string) {
 	// Needs to happen in servenv.OnRun() instead of init because it requires flag parsing and logging
 	servenv.OnRun(func() {
-		if *openTsdbURI == "" {
-			return
+		InitWithoutServenv(prefix)
+	})
+}
+
+// InitWithoutServenv initializes the opentsdb without servenv
+func InitWithoutServenv(prefix string) {
+	if *openTsdbURI == "" {
+		return
+	}
+
+	backend := &openTSDBBackend{
+		prefix:     prefix,
+		commonTags: stats.ParseCommonTags(*stats.CommonTags),
+	}
+
+	stats.RegisterPushBackend("opentsdb", backend)
+
+	http.HandleFunc("/debug/opentsdb", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		dataPoints := (*backend).getDataPoints()
+		sort.Sort(byMetric(dataPoints))
+
+		if b, err := json.MarshalIndent(dataPoints, "", "  "); err != nil {
+			w.Write([]byte(err.Error()))
+		} else {
+			w.Write(b)
 		}
-
-		backend := &openTSDBBackend{
-			prefix: prefix,
-			// If you want to global service values like host, service name, git revision, etc,
-			// this is the place to do it.
-			commonTags: map[string]string{},
-		}
-
-		stats.RegisterPushBackend("opentsdb", backend)
-
-		http.HandleFunc("/debug/opentsdb", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			dataPoints := (*backend).getDataPoints()
-			sort.Sort(byMetric(dataPoints))
-
-			if b, err := json.MarshalIndent(dataPoints, "", "  "); err != nil {
-				w.Write([]byte(err.Error()))
-			} else {
-				w.Write(b)
-			}
-		})
 	})
 }
 
@@ -118,7 +137,7 @@ func (backend *openTSDBBackend) getDataPoints() []dataPoint {
 	return dataCollector.dataPoints
 }
 
-// combineMetricName joins parts of a hierachical name with a "."
+// combineMetricName joins parts of a hierarchical name with a "."
 func combineMetricName(parts ...string) string {
 	return strings.Join(parts, ".")
 }
@@ -198,7 +217,7 @@ func (dc *dataCollector) addExpVar(kv expvar.KeyValue) {
 	case *stats.MultiTimings:
 		dc.addTimings(v.Labels(), &v.Timings, k)
 	case *stats.Timings:
-		dc.addTimings([]string{"Histograms"}, v, k)
+		dc.addTimings([]string{v.Label()}, v, k)
 	case *stats.Histogram:
 		dc.addHistogram(v, 1, k, make(map[string]string))
 	case *stats.CountersWithSingleLabel:

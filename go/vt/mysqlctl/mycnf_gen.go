@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,6 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"path"
 	"text/template"
@@ -85,7 +84,8 @@ func NewMycnf(tabletUID uint32, mysqlPort int32) *Mycnf {
 	cnf.MasterInfoFile = path.Join(tabletDir, "master.info")
 	cnf.PidFile = path.Join(tabletDir, "mysql.pid")
 	cnf.TmpDir = path.Join(tabletDir, "tmp")
-	cnf.SlaveLoadTmpDir = cnf.TmpDir
+	// by default the secure-file-priv path is `tmp`
+	cnf.SecureFilePriv = cnf.TmpDir
 	return cnf
 }
 
@@ -94,7 +94,12 @@ func TabletDir(uid uint32) string {
 	if *tabletDir != "" {
 		return fmt.Sprintf("%s/%s", env.VtDataRoot(), *tabletDir)
 	}
-	return fmt.Sprintf("%s/vt_%010d", env.VtDataRoot(), uid)
+	return DefaultTabletDirAtRoot(env.VtDataRoot(), uid)
+}
+
+// DefaultTabletDirAtRoot returns the default directory for a tablet given a UID and a VtDataRoot variable
+func DefaultTabletDirAtRoot(dataRoot string, uid uint32) string {
+	return fmt.Sprintf("%s/vt_%010d", dataRoot, uid)
 }
 
 // MycnfFile returns the default location of the my.cnf file.
@@ -121,19 +126,9 @@ func (cnf *Mycnf) directoryList() []string {
 	}
 }
 
-// makeMycnf will join cnf files cnfPaths and substitute in the right values.
-func (cnf *Mycnf) makeMycnf(cnfFiles []string) (string, error) {
-	myTemplateSource := new(bytes.Buffer)
-	myTemplateSource.WriteString("[mysqld]\n")
-	for _, path := range cnfFiles {
-		data, dataErr := ioutil.ReadFile(path)
-		if dataErr != nil {
-			return "", dataErr
-		}
-		myTemplateSource.WriteString("## " + path + "\n")
-		myTemplateSource.Write(data)
-	}
-	return cnf.fillMycnfTemplate(myTemplateSource.String())
+// makeMycnf will substitute values
+func (cnf *Mycnf) makeMycnf(partialcnf string) (string, error) {
+	return cnf.fillMycnfTemplate(partialcnf)
 }
 
 // fillMycnfTemplate will fill in the passed in template with the values
@@ -155,8 +150,8 @@ func (cnf *Mycnf) fillMycnfTemplate(tmplSrc string) (string, error) {
 //
 // The value assigned to ServerID will be in the range [100, 2^31):
 // - It avoids 0 because that's reserved for mysqlbinlog dumps.
-// - It also avoids 1-99 because low numbers are used for fake slave
-// connections.  See NewSlaveConnection() in binlog/slave_connection.go
+// - It also avoids 1-99 because low numbers are used for fake
+// connections.  See NewBinlogConnection() in binlog/binlog_connection.go
 // for more on that.
 // - It avoids the 2^31 - 2^32-1 range, as there seems to be some
 // confusion there. The main MySQL documentation at:

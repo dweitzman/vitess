@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ limitations under the License.
 // the environment. It also needs to call env.Close before exiting.
 //
 // Note: If you need to plug in any custom initialization/cleanup for
-// a vitess distribution, register them using onInit and onClose. A
+// a vitess distribution, register them using OnInit and onClose. A
 // clean way of achieving that is adding to this package a file with
 // an init() function that registers the hooks.
 package servenv
@@ -32,7 +32,7 @@ import (
 	"flag"
 	"net/url"
 	"os"
-	"runtime"
+	"os/signal"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,10 +55,11 @@ var (
 	Port *int
 
 	// Flags to alter the behavior of the library.
-	lameduckPeriod       = flag.Duration("lameduck-period", 50*time.Millisecond, "keep running at least this long after SIGTERM before stopping")
-	onTermTimeout        = flag.Duration("onterm_timeout", 10*time.Second, "wait no more than this for OnTermSync handlers before stopping")
-	memProfileRate       = flag.Int("mem-profile-rate", 512*1024, "profile every n bytes allocated")
-	mutexProfileFraction = flag.Int("mutex-profile-fraction", 0, "profile every n mutex contention events (see runtime.SetMutexProfileFraction)")
+	lameduckPeriod = flag.Duration("lameduck-period", 50*time.Millisecond, "keep running at least this long after SIGTERM before stopping")
+	onTermTimeout  = flag.Duration("onterm_timeout", 10*time.Second, "wait no more than this for OnTermSync handlers before stopping")
+	_              = flag.Int("mem-profile-rate", 512*1024, "deprecated: use '-pprof=mem' instead")
+	_              = flag.Int("mutex-profile-fraction", 0, "deprecated: use '-pprof=mutex' instead")
+	catchSigpipe   = flag.Bool("catch-sigpipe", false, "catch and ignore SIGPIPE on stdout and stderr if specified")
 
 	// mutex used to protect the Init function
 	mu sync.Mutex
@@ -77,6 +78,22 @@ var (
 func Init() {
 	mu.Lock()
 	defer mu.Unlock()
+
+	// Ignore SIGPIPE if specified
+	// The Go runtime catches SIGPIPE for us on all fds except stdout/stderr
+	// See https://golang.org/pkg/os/signal/#hdr-SIGPIPE
+	if *catchSigpipe {
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGPIPE)
+		go func() {
+			<-sigChan
+			log.Warning("Caught SIGPIPE (ignoring all future SIGPIPEs)")
+			signal.Ignore(syscall.SIGPIPE)
+		}()
+	}
+
+	// Add version tag to every info log
+	log.Infof(AppVersion.String())
 	if inited {
 		log.Fatal("servenv.Init called second time")
 	}
@@ -86,13 +103,6 @@ func Init() {
 	// non-privileged user starting the program correctly.
 	if uid := os.Getuid(); uid == 0 {
 		log.Exitf("servenv.Init: running this as root makes no sense")
-	}
-
-	runtime.MemProfileRate = *memProfileRate
-
-	if *mutexProfileFraction != 0 {
-		log.Infof("setting mutex profile fraction to %v", *mutexProfileFraction)
-		runtime.SetMutexProfileFraction(*mutexProfileFraction)
 	}
 
 	// We used to set this limit directly, but you pretty much have to
@@ -125,9 +135,9 @@ func populateListeningURL(port int32) {
 	}
 }
 
-// onInit registers f to be run at the beginning of the app
+// OnInit registers f to be run at the beginning of the app
 // lifecycle. It should be called in an init() function.
-func onInit(f func()) {
+func OnInit(f func()) {
 	onInitHooks.Add(f)
 }
 
@@ -155,6 +165,7 @@ func OnTermSync(f func()) {
 
 // fireOnTermSyncHooks returns true iff all the hooks finish before the timeout.
 func fireOnTermSyncHooks(timeout time.Duration) bool {
+	defer log.Flush()
 	log.Infof("Firing synchronous OnTermSync hooks and waiting up to %v for them", timeout)
 
 	timer := time.NewTimer(timeout)

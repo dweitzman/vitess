@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -94,7 +94,9 @@ type ConsolidatorCache struct {
 
 // NewConsolidatorCache creates a new cache with the given capacity.
 func NewConsolidatorCache(capacity int64) *ConsolidatorCache {
-	return &ConsolidatorCache{cache.NewLRUCache(capacity)}
+	return &ConsolidatorCache{cache.NewLRUCache(capacity, func(_ interface{}) int64 {
+		return 1
+	})}
 }
 
 // Record increments the count for "query" by 1.
@@ -117,7 +119,7 @@ type ConsolidatorCacheItem struct {
 // Items returns the items in the cache as an array of String, int64 structs
 func (cc *ConsolidatorCache) Items() []ConsolidatorCacheItem {
 	items := cc.LRUCache.Items()
-	ret := make([]ConsolidatorCacheItem, len(items), len(items))
+	ret := make([]ConsolidatorCacheItem, len(items))
 	for i, v := range items {
 		ret[i] = ConsolidatorCacheItem{Query: v.Key, Count: v.Value.(*ccount).get()}
 	}
@@ -127,13 +129,6 @@ func (cc *ConsolidatorCache) Items() []ConsolidatorCacheItem {
 // ccount elements are used with a cache.LRUCache object to track if another
 // request for the same query is already in progress.
 type ccount int64
-
-// Size always returns 1 because we use the cache only to track queries,
-// independent of the number of requests waiting for them.
-// This implements the cache.Value interface.
-func (cc *ccount) Size() int {
-	return 1
-}
 
 func (cc *ccount) add(n int64) int64 {
 	return atomic.AddInt64((*int64)(cc), n)

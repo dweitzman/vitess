@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"vitess.io/vitess/go/vt/logutil"
 	"vitess.io/vitess/go/vt/topo/memorytopo"
@@ -88,7 +88,7 @@ func testWaitForDrain(t *testing.T, desc, cells string, drain drainDirective, ex
 	t2 := NewFakeTablet(t, wr, "cell2", 1, topodatapb.TabletType_REPLICA, nil,
 		TabletKeyspaceShard(t, keyspace, shard))
 
-	target := querypb.Target{
+	target := &querypb.Target{
 		Keyspace:   keyspace,
 		Shard:      shard,
 		TabletType: topodatapb.TabletType_REPLICA,

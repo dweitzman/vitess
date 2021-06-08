@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -17,12 +17,14 @@ limitations under the License.
 package endtoend
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
 
-	"golang.org/x/net/context"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/mysql"
 	"vitess.io/vitess/go/sqltypes"
@@ -100,7 +102,6 @@ func TestQueries(t *testing.T) {
 				sqltypes.MakeTrusted(querypb.Type_VARCHAR, []byte("nice name")),
 			},
 		},
-		RowsAffected: 1,
 	}
 	if !result.Equal(expectedResult) {
 		// MySQL 5.7 is adding the NO_DEFAULT_VALUE_FLAG to Flags.
@@ -219,7 +220,7 @@ func readRowsUsingStream(t *testing.T, conn *mysql.Conn, expectedCount int) {
 	// Read the rows.
 	count := 0
 	for {
-		row, err := conn.FetchNext()
+		row, err := conn.FetchNext(nil)
 		if err != nil {
 			t.Fatalf("FetchNext failed: %v", err)
 		}
@@ -256,7 +257,7 @@ func doTestWarnings(t *testing.T, disableClientDeprecateEOF bool) {
 	}
 
 	// Disable strict mode
-	result, err = conn.ExecuteFetch("set session sql_mode=''", 0, false)
+	_, err = conn.ExecuteFetch("set session sql_mode=''", 0, false)
 	if err != nil {
 		t.Fatalf("disable strict mode failed: %v", err)
 	}
@@ -273,7 +274,7 @@ func doTestWarnings(t *testing.T, disableClientDeprecateEOF bool) {
 		t.Errorf("unexpected result for warnings: %v", warnings)
 	}
 
-	result, err = conn.ExecuteFetch("drop table a", 0, false)
+	_, err = conn.ExecuteFetch("drop table a", 0, false)
 	if err != nil {
 		t.Fatalf("create table failed: %v", err)
 	}
@@ -285,4 +286,47 @@ func TestWarningsDeprecateEOF(t *testing.T) {
 
 func TestWarningsNoDeprecateEOF(t *testing.T) {
 	doTestWarnings(t, true)
+}
+
+func TestSysInfo(t *testing.T) {
+	ctx := context.Background()
+	conn, err := mysql.Connect(ctx, &connParams)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	_, err = conn.ExecuteFetch("drop table if exists `a`", 1000, true)
+	require.NoError(t, err)
+
+	_, err = conn.ExecuteFetch("CREATE TABLE `a` (`one` int NOT NULL,`two` int NOT NULL,PRIMARY KEY (`one`,`two`)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4", 1000, true)
+	require.NoError(t, err)
+	defer conn.ExecuteFetch("drop table `a`", 1000, true)
+
+	qr, err := conn.ExecuteFetch(`SELECT
+		column_name column_name,
+		data_type data_type,
+		column_type full_data_type,
+		character_maximum_length character_maximum_length,
+		numeric_precision numeric_precision,
+		numeric_scale numeric_scale,
+		datetime_precision datetime_precision,
+		column_default column_default,
+		is_nullable is_nullable,
+		extra extra,
+		table_name table_name
+	FROM information_schema.columns
+	WHERE table_schema = 'vttest' and table_name = 'a'
+	ORDER BY ordinal_position`, 1000, true)
+	require.NoError(t, err)
+	require.Equal(t, 2, len(qr.Rows))
+
+	// is_nullable
+	assert.Equal(t, `VARCHAR("NO")`, qr.Rows[0][8].String())
+	assert.Equal(t, `VARCHAR("NO")`, qr.Rows[1][8].String())
+
+	// table_name
+	assert.Equal(t, `VARCHAR("a")`, qr.Rows[0][10].String())
+	assert.Equal(t, `VARCHAR("a")`, qr.Rows[1][10].String())
+
+	assert.EqualValues(t, sqltypes.Uint64, qr.Fields[4].Type)
+	assert.EqualValues(t, querypb.Type_UINT64, qr.Rows[0][4].Type())
 }

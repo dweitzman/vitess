@@ -9,6 +9,7 @@ import (
 	time "time"
 
 	gomock "github.com/golang/mock/gomock"
+
 	discovery "vitess.io/vitess/go/vt/discovery"
 	throttlerdata "vitess.io/vitess/go/vt/proto/throttlerdata"
 )
@@ -71,7 +72,7 @@ func (mr *MockThrottlerInterfaceMockRecorder) MaxRate() *gomock.Call {
 }
 
 // RecordReplicationLag mocks base method
-func (m *MockThrottlerInterface) RecordReplicationLag(arg0 time.Time, arg1 *discovery.TabletStats) {
+func (m *MockThrottlerInterface) RecordReplicationLag(arg0 time.Time, arg1 *discovery.LegacyTabletStats) {
 	m.ctrl.Call(m, "RecordReplicationLag", arg0, arg1)
 }
 

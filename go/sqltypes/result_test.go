@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ package sqltypes
 import (
 	"reflect"
 	"testing"
+
+	"vitess.io/vitess/go/test/utils"
 
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
@@ -61,19 +63,9 @@ func TestCopy(t *testing.T) {
 			{TestValue(Int64, "2"), MakeTrusted(VarChar, nil)},
 			{TestValue(Int64, "3"), TestValue(VarChar, "")},
 		},
-		Extras: &querypb.ResultExtras{
-			EventToken: &querypb.EventToken{
-				Timestamp: 123,
-				Shard:     "sh",
-				Position:  "po",
-			},
-			Fresher: true,
-		},
 	}
 	out := in.Copy()
-	if !reflect.DeepEqual(out, in) {
-		t.Errorf("Copy:\n%v, want\n%v", out, in)
-	}
+	utils.MustMatch(t, in, out)
 }
 
 func TestTruncate(t *testing.T) {
@@ -89,14 +81,6 @@ func TestTruncate(t *testing.T) {
 			{TestValue(Int64, "1"), MakeTrusted(Null, nil)},
 			{TestValue(Int64, "2"), MakeTrusted(VarChar, nil)},
 			{TestValue(Int64, "3"), TestValue(VarChar, "")},
-		},
-		Extras: &querypb.ResultExtras{
-			EventToken: &querypb.EventToken{
-				Timestamp: 123,
-				Shard:     "sh",
-				Position:  "po",
-			},
-			Fresher: true,
 		},
 	}
 
@@ -116,14 +100,6 @@ func TestTruncate(t *testing.T) {
 			{TestValue(Int64, "1")},
 			{TestValue(Int64, "2")},
 			{TestValue(Int64, "3")},
-		},
-		Extras: &querypb.ResultExtras{
-			EventToken: &querypb.EventToken{
-				Timestamp: 123,
-				Shard:     "sh",
-				Position:  "po",
-			},
-			Fresher: true,
 		},
 	}
 	if !reflect.DeepEqual(out, want) {
@@ -315,8 +291,56 @@ func TestStripMetaData(t *testing.T) {
 			}
 		}
 		// check we didn't change the original result.
-		if !reflect.DeepEqual(tcase.in, inCopy) {
-			t.Error("StripMetaData modified original result")
-		}
+		utils.MustMatch(t, tcase.in, inCopy)
+	}
+}
+
+func TestAppendResult(t *testing.T) {
+	src := &Result{
+		Fields: []*querypb.Field{{
+			Type: Int64,
+		}, {
+			Type: VarChar,
+		}},
+		InsertID:     1,
+		RowsAffected: 2,
+		Rows: [][]Value{
+			{TestValue(Int64, "2"), MakeTrusted(VarChar, nil)},
+			{TestValue(Int64, "3"), TestValue(VarChar, "")},
+		},
+	}
+
+	result := &Result{
+		Fields: []*querypb.Field{{
+			Type: Int64,
+		}, {
+			Type: VarChar,
+		}},
+		InsertID:     3,
+		RowsAffected: 4,
+		Rows: [][]Value{
+			{TestValue(Int64, "1"), MakeTrusted(Null, nil)},
+		},
+	}
+
+	want := &Result{
+		Fields: []*querypb.Field{{
+			Type: Int64,
+		}, {
+			Type: VarChar,
+		}},
+		InsertID:     1,
+		RowsAffected: 6,
+		Rows: [][]Value{
+			{TestValue(Int64, "1"), MakeTrusted(Null, nil)},
+			{TestValue(Int64, "2"), MakeTrusted(VarChar, nil)},
+			{TestValue(Int64, "3"), TestValue(VarChar, "")},
+		},
+	}
+
+	result.AppendResult(src)
+
+	if !reflect.DeepEqual(result, want) {
+		t.Errorf("Got:\n%#v, want:\n%#v", result, want)
 	}
 }

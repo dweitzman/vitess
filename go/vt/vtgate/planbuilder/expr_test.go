@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ limitations under the License.
 package planbuilder
 
 import (
-	"reflect"
 	"testing"
 
 	"vitess.io/vitess/go/vt/sqlparser"
@@ -41,59 +40,59 @@ func TestValEqual(t *testing.T) {
 		in2: &sqlparser.ColName{Metadata: c2, Name: sqlparser.NewColIdent("c1")},
 		out: false,
 	}, {
-		in1: newValArg(":aa"),
+		in1: sqlparser.NewArgument("aa"),
 		in2: &sqlparser.ColName{Metadata: c1, Name: sqlparser.NewColIdent("c1")},
 		out: false,
 	}, {
-		in1: newValArg(":aa"),
-		in2: newValArg(":aa"),
+		in1: sqlparser.NewArgument("aa"),
+		in2: sqlparser.NewArgument("aa"),
 		out: true,
 	}, {
-		in1: newValArg(":aa"),
-		in2: newValArg(":bb"),
+		in1: sqlparser.NewArgument("aa"),
+		in2: sqlparser.NewArgument("bb"),
 	}, {
-		in1: newStrVal("aa"),
-		in2: newStrVal("aa"),
+		in1: sqlparser.NewStrLiteral("aa"),
+		in2: sqlparser.NewStrLiteral("aa"),
 		out: true,
 	}, {
-		in1: newStrVal("11"),
-		in2: newHexVal("3131"),
+		in1: sqlparser.NewStrLiteral("11"),
+		in2: sqlparser.NewHexLiteral("3131"),
 		out: true,
 	}, {
-		in1: newHexVal("3131"),
-		in2: newStrVal("11"),
+		in1: sqlparser.NewHexLiteral("3131"),
+		in2: sqlparser.NewStrLiteral("11"),
 		out: true,
 	}, {
-		in1: newHexVal("3131"),
-		in2: newHexVal("3131"),
+		in1: sqlparser.NewHexLiteral("3131"),
+		in2: sqlparser.NewHexLiteral("3131"),
 		out: true,
 	}, {
-		in1: newHexVal("3131"),
-		in2: newHexVal("3132"),
+		in1: sqlparser.NewHexLiteral("3131"),
+		in2: sqlparser.NewHexLiteral("3132"),
 		out: false,
 	}, {
-		in1: newHexVal("313"),
-		in2: newHexVal("3132"),
+		in1: sqlparser.NewHexLiteral("313"),
+		in2: sqlparser.NewHexLiteral("3132"),
 		out: false,
 	}, {
-		in1: newHexVal("3132"),
-		in2: newHexVal("313"),
+		in1: sqlparser.NewHexLiteral("3132"),
+		in2: sqlparser.NewHexLiteral("313"),
 		out: false,
 	}, {
-		in1: newIntVal("313"),
-		in2: newHexVal("3132"),
+		in1: sqlparser.NewIntLiteral("313"),
+		in2: sqlparser.NewHexLiteral("3132"),
 		out: false,
 	}, {
-		in1: newHexVal("3132"),
-		in2: newIntVal("313"),
+		in1: sqlparser.NewHexLiteral("3132"),
+		in2: sqlparser.NewIntLiteral("313"),
 		out: false,
 	}, {
-		in1: newIntVal("313"),
-		in2: newIntVal("313"),
+		in1: sqlparser.NewIntLiteral("313"),
+		in2: sqlparser.NewIntLiteral("313"),
 		out: true,
 	}, {
-		in1: newIntVal("313"),
-		in2: newIntVal("314"),
+		in1: sqlparser.NewIntLiteral("313"),
+		in2: sqlparser.NewIntLiteral("314"),
 		out: false,
 	}}
 	for _, tc := range testcases {
@@ -102,31 +101,4 @@ func TestValEqual(t *testing.T) {
 			t.Errorf("valEqual(%#v, %#v): %v, want %v", tc.in1, tc.in2, out, tc.out)
 		}
 	}
-}
-
-func TestSkipParenthesis(t *testing.T) {
-	baseNode := newIntVal("1")
-	paren1 := &sqlparser.ParenExpr{Expr: baseNode}
-	paren2 := &sqlparser.ParenExpr{Expr: paren1}
-	for _, tcase := range []sqlparser.Expr{baseNode, paren1, paren2} {
-		if got, want := skipParenthesis(tcase), baseNode; !reflect.DeepEqual(got, want) {
-			t.Errorf("skipParenthesis(%v): %v, want %v", sqlparser.String(tcase), sqlparser.String(got), sqlparser.String(want))
-		}
-	}
-}
-
-func newStrVal(in string) *sqlparser.SQLVal {
-	return sqlparser.NewStrVal([]byte(in))
-}
-
-func newIntVal(in string) *sqlparser.SQLVal {
-	return sqlparser.NewIntVal([]byte(in))
-}
-
-func newHexVal(in string) *sqlparser.SQLVal {
-	return sqlparser.NewHexVal([]byte(in))
-}
-
-func newValArg(in string) *sqlparser.SQLVal {
-	return sqlparser.NewValArg([]byte(in))
 }

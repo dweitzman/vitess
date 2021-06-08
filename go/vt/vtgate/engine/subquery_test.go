@@ -1,5 +1,5 @@
 /*
-Copyright 2018 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,6 +19,8 @@ package engine
 import (
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/sqltypes"
 
@@ -54,7 +56,7 @@ func TestSubqueryExecute(t *testing.T) {
 		t.Fatal(err)
 	}
 	prim.ExpectLog(t, []string{
-		`Execute a: type:INT64 value:"1"  true`,
+		`Execute a: type:INT64 value:"1" true`,
 	})
 	expectResult(t, "sq.Execute", r, sqltypes.MakeTestResult(
 		sqltypes.MakeTestFields(
@@ -71,7 +73,7 @@ func TestSubqueryExecute(t *testing.T) {
 		sendErr: errors.New("err"),
 	}
 	_, err = sq.Execute(nil, bv, true)
-	expectError(t, "sq.Execute", err, "err")
+	require.EqualError(t, err, `err`)
 }
 
 func TestSubqueryStreamExecute(t *testing.T) {
@@ -103,7 +105,7 @@ func TestSubqueryStreamExecute(t *testing.T) {
 		t.Fatal(err)
 	}
 	prim.ExpectLog(t, []string{
-		`StreamExecute a: type:INT64 value:"1"  true`,
+		`StreamExecute a: type:INT64 value:"1" true`,
 	})
 	expectResult(t, "sq.Execute", r, sqltypes.MakeTestResult(
 		sqltypes.MakeTestFields(
@@ -120,7 +122,7 @@ func TestSubqueryStreamExecute(t *testing.T) {
 		sendErr: errors.New("err"),
 	}
 	_, err = wrapStreamExecute(sq, nil, bv, true)
-	expectError(t, "sq.Execute", err, "err")
+	require.EqualError(t, err, `err`)
 }
 
 func TestSubqueryGetFields(t *testing.T) {
@@ -152,8 +154,8 @@ func TestSubqueryGetFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	prim.ExpectLog(t, []string{
-		`GetFields a: type:INT64 value:"1" `,
-		`Execute a: type:INT64 value:"1"  true`,
+		`GetFields a: type:INT64 value:"1"`,
+		`Execute a: type:INT64 value:"1" true`,
 	})
 	expectResult(t, "sq.Execute", r, sqltypes.MakeTestResult(
 		sqltypes.MakeTestFields(
@@ -167,5 +169,5 @@ func TestSubqueryGetFields(t *testing.T) {
 		sendErr: errors.New("err"),
 	}
 	_, err = sq.GetFields(nil, bv)
-	expectError(t, "sq.Execute", err, "err")
+	require.EqualError(t, err, `err`)
 }

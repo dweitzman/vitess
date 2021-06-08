@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	throttlerdatapb "vitess.io/vitess/go/vt/proto/throttlerdata"
 )
 
@@ -27,7 +29,13 @@ import (
 // MaxReplicationLagModule. Internally, the parameters are represented by a
 // protobuf message. This message is also used to update the parameters.
 type MaxReplicationLagModuleConfig struct {
-	throttlerdatapb.Configuration
+	*throttlerdatapb.Configuration
+}
+
+func (cfg MaxReplicationLagModuleConfig) Clone() MaxReplicationLagModuleConfig {
+	return MaxReplicationLagModuleConfig{
+		proto.Clone(cfg.Configuration).(*throttlerdatapb.Configuration),
+	}
 }
 
 // Most of the values are based on the assumption that vttablet is started
@@ -35,7 +43,7 @@ type MaxReplicationLagModuleConfig struct {
 const healthCheckInterval = 20
 
 var defaultMaxReplicationLagModuleConfig = MaxReplicationLagModuleConfig{
-	throttlerdatapb.Configuration{
+	&throttlerdatapb.Configuration{
 		TargetReplicationLagSec: 2,
 		MaxReplicationLagSec:    ReplicationLagModuleDisabled,
 
@@ -45,7 +53,7 @@ var defaultMaxReplicationLagModuleConfig = MaxReplicationLagModuleConfig{
 		EmergencyDecrease: 0.5,
 
 		// Wait for two health broadcast rounds. Otherwise, the "decrease" mode
-		// has less than 2 lag records available to calculate the actual slave rate.
+		// has less than 2 lag records available to calculate the actual replication rate.
 		MinDurationBetweenIncreasesSec: 2 * healthCheckInterval,
 		// MaxDurationBetweenIncreasesSec defaults to 60+2 seconds because this
 		// corresponds to 3 broadcasts.
@@ -62,13 +70,13 @@ var defaultMaxReplicationLagModuleConfig = MaxReplicationLagModuleConfig{
 
 // DefaultMaxReplicationLagModuleConfig returns a copy of the default config object.
 func DefaultMaxReplicationLagModuleConfig() MaxReplicationLagModuleConfig {
-	return defaultMaxReplicationLagModuleConfig
+	return defaultMaxReplicationLagModuleConfig.Clone()
 }
 
 // NewMaxReplicationLagModuleConfig returns a default configuration where
 // only "maxReplicationLag" is set.
 func NewMaxReplicationLagModuleConfig(maxReplicationLag int64) MaxReplicationLagModuleConfig {
-	config := defaultMaxReplicationLagModuleConfig
+	config := defaultMaxReplicationLagModuleConfig.Clone()
 	config.MaxReplicationLagSec = maxReplicationLag
 	return config
 }

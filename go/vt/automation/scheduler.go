@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -26,9 +26,13 @@ import (
 	"fmt"
 	"sync"
 
-	"golang.org/x/net/context"
+	"vitess.io/vitess/go/vt/proto/automationservice"
+
+	"context"
+
 	"vitess.io/vitess/go/vt/log"
 	automationpb "vitess.io/vitess/go/vt/proto/automation"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 type schedulerState int32
@@ -44,6 +48,8 @@ type taskCreator func(string) Task
 
 // Scheduler executes automation tasks and maintains the execution state.
 type Scheduler struct {
+	automationservice.UnimplementedAutomationServer
+
 	idGenerator IDGenerator
 
 	mu sync.Mutex
@@ -54,7 +60,7 @@ type Scheduler struct {
 	// Guarded by "mu".
 	state schedulerState
 
-	// Guarded by "taskCreatorMu". May be overriden by testing code.
+	// Guarded by "taskCreatorMu". May be overridden by testing code.
 	taskCreator   taskCreator
 	taskCreatorMu sync.Mutex
 
@@ -149,7 +155,7 @@ clusterOpLoop:
 				// Make sure all new tasks do not miss any required parameters.
 				err := s.validateTaskContainers(newTaskContainers)
 				if err != nil {
-					err = fmt.Errorf("Task: %v (%v/%v) emitted a new task which is not valid. Error: %v", taskProto.Name, clusterOp.Id, taskProto.Id, err)
+					err = vterrors.Wrapf(err, "task: %v (%v/%v) emitted a new task which is not valid. Error: %v", taskProto.Name, clusterOp.Id, taskProto.Id, err)
 					log.Error(err)
 					MarkTaskFailed(taskProto, output, err)
 					clusterOp.Error = err.Error()
@@ -311,7 +317,7 @@ func (s *Scheduler) EnqueueClusterOperation(ctx context.Context, req *automation
 		return nil, fmt.Errorf("scheduler is not running. State: %v", s.state)
 	}
 
-	if s.registeredClusterOperations[req.Name] != true {
+	if !s.registeredClusterOperations[req.Name] {
 		return nil, fmt.Errorf("no ClusterOperation with name: %v is registered", req.Name)
 	}
 
@@ -368,7 +374,7 @@ func (s *Scheduler) GetClusterOperationDetails(ctx context.Context, req *automat
 		return nil, err
 	}
 	return &automationpb.GetClusterOperationDetailsResponse{
-		ClusterOp: &clusterOp.ClusterOperation,
+		ClusterOp: clusterOp.ClusterOperation,
 	}, nil
 }
 

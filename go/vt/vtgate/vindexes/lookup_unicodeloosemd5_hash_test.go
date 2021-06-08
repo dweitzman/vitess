@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -20,6 +20,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"vitess.io/vitess/go/sqltypes"
 
 	"vitess.io/vitess/go/vt/key"
@@ -27,19 +29,19 @@ import (
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
-const hashed10 uint64 = 17563797831108199066
-const hashed20 uint64 = 8729390916138266389
-const hashed30 uint64 = 1472608112194674795
-const hashed40 uint64 = 16576388050845489136
+const (
+	hashed10 uint64 = 17563797831108199066
+	hashed20 uint64 = 8729390916138266389
+	hashed30 uint64 = 1472608112194674795
+	hashed40 uint64 = 16576388050845489136
+)
 
 func TestLookupUnicodeLooseMD5HashMap(t *testing.T) {
 	lookup := createLookup(t, "lookup_unicodeloosemd5_hash", false)
-	vc := &vcursor{numRows: 2}
+	vc := &vcursor{numRows: 2, keys: []sqltypes.Value{sqltypes.NewUint64(hashed10), sqltypes.NewUint64(hashed20)}}
 
 	got, err := lookup.Map(vc, []sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []key.Destination{
 		key.DestinationKeyspaceIDs([][]byte{
 			[]byte("\x16k@\xb4J\xbaK\xd6"),
@@ -54,15 +56,12 @@ func TestLookupUnicodeLooseMD5HashMap(t *testing.T) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
 
+	vars, err := sqltypes.BuildBindVariable([]interface{}{sqltypes.NewUint64(hashed10), sqltypes.NewUint64(hashed20)})
+	require.NoError(t, err)
 	wantqueries := []*querypb.BoundQuery{{
-		Sql: "select toc from t where fromc = :fromc",
+		Sql: "select fromc, toc from t where fromc in ::fromc",
 		BindVariables: map[string]*querypb.BindVariable{
-			"fromc": sqltypes.Uint64BindVariable(hashed10),
-		},
-	}, {
-		Sql: "select toc from t where fromc = :fromc",
-		BindVariables: map[string]*querypb.BindVariable{
-			"fromc": sqltypes.Uint64BindVariable(hashed20),
+			"fromc": vars,
 		},
 	}}
 	if !reflect.DeepEqual(vc.queries, wantqueries) {
@@ -80,7 +79,7 @@ func TestLookupUnicodeLooseMD5HashMap(t *testing.T) {
 }
 
 func TestLookupUnicodeLooseMD5HashMapAutocommit(t *testing.T) {
-	lookupNonUnique, err := CreateVindex("lookup_unicodeloosemd5_hash", "lookup", map[string]string{
+	vindex, err := CreateVindex("lookup_unicodeloosemd5_hash", "lookup", map[string]string{
 		"table":      "t",
 		"from":       "fromc",
 		"to":         "toc",
@@ -90,12 +89,11 @@ func TestLookupUnicodeLooseMD5HashMapAutocommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	vc := &vcursor{numRows: 2}
+	lookupNonUnique := vindex.(SingleColumn)
+	vc := &vcursor{numRows: 2, keys: []sqltypes.Value{sqltypes.NewUint64(hashed10), sqltypes.NewUint64(hashed20)}}
 
 	got, err := lookupNonUnique.Map(vc, []sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []key.Destination{
 		key.DestinationKeyspaceIDs([][]byte{
 			[]byte("\x16k@\xb4J\xbaK\xd6"),
@@ -110,22 +108,19 @@ func TestLookupUnicodeLooseMD5HashMapAutocommit(t *testing.T) {
 		t.Errorf("Map(): %#v, want %+v", got, want)
 	}
 
+	vars, err := sqltypes.BuildBindVariable([]interface{}{sqltypes.NewUint64(hashed10), sqltypes.NewUint64(hashed20)})
+	require.NoError(t, err)
 	wantqueries := []*querypb.BoundQuery{{
-		Sql: "select toc from t where fromc = :fromc",
+		Sql: "select fromc, toc from t where fromc in ::fromc",
 		BindVariables: map[string]*querypb.BindVariable{
-			"fromc": sqltypes.Uint64BindVariable(hashed10),
-		},
-	}, {
-		Sql: "select toc from t where fromc = :fromc",
-		BindVariables: map[string]*querypb.BindVariable{
-			"fromc": sqltypes.Uint64BindVariable(hashed20),
+			"fromc": vars,
 		},
 	}}
 	if !reflect.DeepEqual(vc.queries, wantqueries) {
 		t.Errorf("lookup.Map queries:\n%v, want\n%v", vc.queries, wantqueries)
 	}
 
-	if got, want := vc.autocommits, 2; got != want {
+	if got, want := vc.autocommits, 1; got != want {
 		t.Errorf("Create(autocommit) count: %d, want %d", got, want)
 	}
 }
@@ -135,9 +130,7 @@ func TestLookupUnicodeLooseMD5HashMapWriteOnly(t *testing.T) {
 	vc := &vcursor{numRows: 0}
 
 	got, err := lookupNonUnique.Map(vc, []sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []key.Destination{
 		key.DestinationKeyRange{
 			KeyRange: &topodatapb.KeyRange{},
@@ -156,9 +149,7 @@ func TestLookupUnicodeLooseMD5HashMapAbsent(t *testing.T) {
 	vc := &vcursor{numRows: 0}
 
 	got, err := lookupNonUnique.Map(vc, []sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []key.Destination{
 		key.DestinationNone{},
 		key.DestinationNone{},
@@ -175,9 +166,7 @@ func TestLookupUnicodeLooseMD5HashVerify(t *testing.T) {
 	got, err := lookupNonUnique.Verify(vc,
 		[]sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)},
 		[][]byte{[]byte("\x16k@\xb4J\xbaK\xd6"), []byte("\x06\xe7\xea\"Βp\x8f")})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	wantResult := []bool{true, true}
 	if !reflect.DeepEqual(got, wantResult) {
 		t.Errorf("lookuphash.Verify(match): %v, want %v", got, wantResult)
@@ -214,9 +203,7 @@ func TestLookupUnicodeLooseMD5HashVerify(t *testing.T) {
 	vc.queries = nil
 
 	got, err = lookupNonUnique.Verify(vc, []sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)}, [][]byte{[]byte(""), []byte("")})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if vc.queries != nil {
 		t.Errorf("lookup.Verify(writeOnly), queries: %v, want nil", vc.queries)
 	}
@@ -227,7 +214,7 @@ func TestLookupUnicodeLooseMD5HashVerify(t *testing.T) {
 }
 
 func TestLookupUnicodeLooseMD5HashVerifyAutocommit(t *testing.T) {
-	lookupNonUnique, err := CreateVindex("lookup_unicodeloosemd5_hash", "lookup", map[string]string{
+	vindex, err := CreateVindex("lookup_unicodeloosemd5_hash", "lookup", map[string]string{
 		"table":      "t",
 		"from":       "fromc",
 		"to":         "toc",
@@ -236,13 +223,12 @@ func TestLookupUnicodeLooseMD5HashVerifyAutocommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	lookupNonUnique := vindex.(SingleColumn)
 	vc := &vcursor{numRows: 1}
 
 	_, err = lookupNonUnique.Verify(vc, []sqltypes.Value{sqltypes.NewInt64(10), sqltypes.NewInt64(20)},
 		[][]byte{[]byte("\x16k@\xb4J\xbaK\xd6"), []byte("\x06\xe7\xea\"Βp\x8f")})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	wantqueries := []*querypb.BoundQuery{{
 		Sql: "select fromc from t where fromc = :fromc and toc = :toc",
@@ -272,17 +258,15 @@ func TestLookupUnicodeLooseMD5HashCreate(t *testing.T) {
 
 	err := lookupNonUnique.(Lookup).Create(vc, [][]sqltypes.Value{{sqltypes.NewInt64(10)}, {sqltypes.NewInt64(20)}},
 		[][]byte{[]byte("\x16k@\xb4J\xbaK\xd6"), []byte("\x06\xe7\xea\"Βp\x8f")}, false /* ignoreMode */)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	wantqueries := []*querypb.BoundQuery{{
-		Sql: "insert into t(fromc, toc) values(:fromc0, :toc0), (:fromc1, :toc1)",
+		Sql: "insert into t(fromc, toc) values(:fromc_0, :toc_0), (:fromc_1, :toc_1)",
 		BindVariables: map[string]*querypb.BindVariable{
-			"fromc0": sqltypes.Uint64BindVariable(hashed10),
-			"toc0":   sqltypes.Uint64BindVariable(1),
-			"fromc1": sqltypes.Uint64BindVariable(hashed20),
-			"toc1":   sqltypes.Uint64BindVariable(2),
+			"fromc_0": sqltypes.Uint64BindVariable(hashed10),
+			"toc_0":   sqltypes.Uint64BindVariable(1),
+			"fromc_1": sqltypes.Uint64BindVariable(hashed20),
+			"toc_1":   sqltypes.Uint64BindVariable(2),
 		},
 	}}
 	if !reflect.DeepEqual(vc.queries, wantqueries) {
@@ -293,11 +277,9 @@ func TestLookupUnicodeLooseMD5HashCreate(t *testing.T) {
 	vc.queries = nil
 	err = lookupNonUnique.(Lookup).Create(vc, [][]sqltypes.Value{{sqltypes.NewInt64(10)}, {sqltypes.NewInt64(20)}},
 		[][]byte{[]byte("\x16k@\xb4J\xbaK\xd6"), []byte("\x06\xe7\xea\"Βp\x8f")}, true /* ignoreMode */)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
-	wantqueries[0].Sql = "insert ignore into t(fromc, toc) values(:fromc0, :toc0), (:fromc1, :toc1)"
+	wantqueries[0].Sql = "insert ignore into t(fromc, toc) values(:fromc_0, :toc_0), (:fromc_1, :toc_1)"
 	if !reflect.DeepEqual(vc.queries, wantqueries) {
 		t.Errorf("lookup.Create queries:\n%v, want\n%v", vc.queries, wantqueries)
 	}
@@ -340,19 +322,17 @@ func TestLookupUnicodeLooseMD5HashCreateAutocommit(t *testing.T) {
 		}},
 		[][]byte{[]byte("\x16k@\xb4J\xbaK\xd6"), []byte("\x06\xe7\xea\"Βp\x8f")},
 		false /* ignoreMode */)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	wantqueries := []*querypb.BoundQuery{{
-		Sql: "insert into t(from1, from2, toc) values(:from10, :from20, :toc0), (:from11, :from21, :toc1) on duplicate key update from1=values(from1), from2=values(from2), toc=values(toc)",
+		Sql: "insert into t(from1, from2, toc) values(:from1_0, :from2_0, :toc_0), (:from1_1, :from2_1, :toc_1) on duplicate key update from1=values(from1), from2=values(from2), toc=values(toc)",
 		BindVariables: map[string]*querypb.BindVariable{
-			"from10": sqltypes.Uint64BindVariable(hashed10),
-			"from20": sqltypes.Uint64BindVariable(hashed20),
-			"toc0":   sqltypes.Uint64BindVariable(1),
-			"from11": sqltypes.Uint64BindVariable(hashed30),
-			"from21": sqltypes.Uint64BindVariable(hashed40),
-			"toc1":   sqltypes.Uint64BindVariable(2),
+			"from1_0": sqltypes.Uint64BindVariable(hashed30),
+			"from2_0": sqltypes.Uint64BindVariable(hashed40),
+			"toc_0":   sqltypes.Uint64BindVariable(2),
+			"from1_1": sqltypes.Uint64BindVariable(hashed10),
+			"from2_1": sqltypes.Uint64BindVariable(hashed20),
+			"toc_1":   sqltypes.Uint64BindVariable(1),
 		},
 	}}
 	if !reflect.DeepEqual(vc.queries, wantqueries) {
@@ -369,9 +349,7 @@ func TestLookupUnicodeLooseMD5HashDelete(t *testing.T) {
 	vc := &vcursor{}
 
 	err := lookupNonUnique.(Lookup).Delete(vc, [][]sqltypes.Value{{sqltypes.NewInt64(10)}, {sqltypes.NewInt64(20)}}, []byte("\x16k@\xb4J\xbaK\xd6"))
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	wantqueries := []*querypb.BoundQuery{{
 		Sql: "delete from t where fromc = :fromc and toc = :toc",
@@ -408,7 +386,7 @@ func TestLookupUnicodeLooseMD5HashDelete(t *testing.T) {
 }
 
 func TestLookupUnicodeLooseMD5HashDeleteAutocommit(t *testing.T) {
-	lookupNonUnique, err := CreateVindex("lookup_unicodeloosemd5_hash", "lookup", map[string]string{
+	lookupNonUnique, _ := CreateVindex("lookup_unicodeloosemd5_hash", "lookup", map[string]string{
 		"table":      "t",
 		"from":       "fromc",
 		"to":         "toc",
@@ -416,10 +394,8 @@ func TestLookupUnicodeLooseMD5HashDeleteAutocommit(t *testing.T) {
 	})
 	vc := &vcursor{}
 
-	err = lookupNonUnique.(Lookup).Delete(vc, [][]sqltypes.Value{{sqltypes.NewInt64(10)}, {sqltypes.NewInt64(20)}}, []byte("\x16k@\xb4J\xbaK\xd6"))
-	if err != nil {
-		t.Error(err)
-	}
+	err := lookupNonUnique.(Lookup).Delete(vc, [][]sqltypes.Value{{sqltypes.NewInt64(10)}, {sqltypes.NewInt64(20)}}, []byte("\x16k@\xb4J\xbaK\xd6"))
+	require.NoError(t, err)
 
 	wantqueries := []*querypb.BoundQuery(nil)
 	if !reflect.DeepEqual(vc.queries, wantqueries) {
@@ -432,9 +408,7 @@ func TestLookupUnicodeLooseMD5HashUpdate(t *testing.T) {
 	vc := &vcursor{}
 
 	err := lookupNonUnique.(Lookup).Update(vc, []sqltypes.Value{sqltypes.NewInt64(10)}, []byte("\x16k@\xb4J\xbaK\xd6"), []sqltypes.Value{sqltypes.NewInt64(20)})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	wantqueries := []*querypb.BoundQuery{{
 		Sql: "delete from t where fromc = :fromc and toc = :toc",
@@ -443,10 +417,10 @@ func TestLookupUnicodeLooseMD5HashUpdate(t *testing.T) {
 			"toc":   sqltypes.Uint64BindVariable(1),
 		},
 	}, {
-		Sql: "insert into t(fromc, toc) values(:fromc0, :toc0)",
+		Sql: "insert into t(fromc, toc) values(:fromc_0, :toc_0)",
 		BindVariables: map[string]*querypb.BindVariable{
-			"fromc0": sqltypes.Uint64BindVariable(hashed20),
-			"toc0":   sqltypes.Uint64BindVariable(1),
+			"fromc_0": sqltypes.Uint64BindVariable(hashed20),
+			"toc_0":   sqltypes.Uint64BindVariable(1),
 		},
 	}}
 	if !reflect.DeepEqual(vc.queries, wantqueries) {

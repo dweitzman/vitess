@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,15 +20,21 @@ package tabletservermock
 import (
 	"sync"
 
-	"golang.org/x/net/context"
+	"google.golang.org/protobuf/proto"
+
+	"context"
 
 	"time"
 
 	"vitess.io/vitess/go/vt/dbconfigs"
+	"vitess.io/vitess/go/vt/mysqlctl"
+	"vitess.io/vitess/go/vt/servenv"
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/vttablet/queryservice"
 	"vitess.io/vitess/go/vt/vttablet/tabletserver/rules"
 	"vitess.io/vitess/go/vt/vttablet/tabletserver/schema"
+	"vitess.io/vitess/go/vt/vttablet/tabletserver/tabletenv"
+	"vitess.io/vitess/go/vt/vttablet/vexec"
 
 	querypb "vitess.io/vitess/go/vt/proto/query"
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
@@ -58,6 +64,8 @@ type StateChange struct {
 
 // Controller is a mock tabletserver.Controller
 type Controller struct {
+	stats *tabletenv.Stats
+
 	// BroadcastData is a channel where we send BroadcastHealth data.
 	// Set at construction time.
 	BroadcastData chan *BroadcastData
@@ -66,8 +74,7 @@ type Controller struct {
 	// Set at construction time.
 	StateChanges chan *StateChange
 
-	// CurrentTarget stores the last known target.
-	CurrentTarget querypb.Target
+	target *querypb.Target
 
 	// SetServingTypeError is the return value for SetServingType.
 	SetServingTypeError error
@@ -93,6 +100,7 @@ type Controller struct {
 // NewController returns a mock of tabletserver.Controller
 func NewController() *Controller {
 	return &Controller{
+		stats:               tabletenv.NewStats(servenv.NewExporter("MockController", "Tablet")),
 		queryServiceEnabled: false,
 		BroadcastData:       make(chan *BroadcastData, 10),
 		StateChanges:        make(chan *StateChange, 10),
@@ -100,8 +108,17 @@ func NewController() *Controller {
 	}
 }
 
+// Stats is part of the tabletserver.Controller interface
+func (tqsc *Controller) Stats() *tabletenv.Stats {
+	return tqsc.stats
+}
+
 // Register is part of the tabletserver.Controller interface
 func (tqsc *Controller) Register() {
+}
+
+// AddStatusHeader is part of the tabletserver.Controller interface
+func (tqsc *Controller) AddStatusHeader() {
 }
 
 // AddStatusPart is part of the tabletserver.Controller interface
@@ -109,33 +126,29 @@ func (tqsc *Controller) AddStatusPart() {
 }
 
 // InitDBConfig is part of the tabletserver.Controller interface
-func (tqsc *Controller) InitDBConfig(target querypb.Target, dbcfgs *dbconfigs.DBConfigs) error {
+func (tqsc *Controller) InitDBConfig(target *querypb.Target, dbcfgs *dbconfigs.DBConfigs, _ mysqlctl.MysqlDaemon) error {
 	tqsc.mu.Lock()
 	defer tqsc.mu.Unlock()
 
-	tqsc.CurrentTarget = target
+	tqsc.target = proto.Clone(target).(*querypb.Target)
 	return nil
 }
 
 // SetServingType is part of the tabletserver.Controller interface
-func (tqsc *Controller) SetServingType(tabletType topodatapb.TabletType, serving bool, alsoAllow []topodatapb.TabletType) (bool, error) {
+func (tqsc *Controller) SetServingType(tabletType topodatapb.TabletType, terTime time.Time, serving bool, reason string) error {
 	tqsc.mu.Lock()
 	defer tqsc.mu.Unlock()
 
-	stateChanged := false
 	if tqsc.SetServingTypeError == nil {
-		stateChanged = tqsc.queryServiceEnabled != serving || tqsc.CurrentTarget.TabletType != tabletType
-		tqsc.CurrentTarget.TabletType = tabletType
+		tqsc.target.TabletType = tabletType
 		tqsc.queryServiceEnabled = serving
 	}
-	if stateChanged {
-		tqsc.StateChanges <- &StateChange{
-			Serving:    serving,
-			TabletType: tabletType,
-		}
+	tqsc.StateChanges <- &StateChange{
+		Serving:    serving,
+		TabletType: tabletType,
 	}
 	tqsc.isInLameduck = false
-	return stateChanged, tqsc.SetServingTypeError
+	return tqsc.SetServingTypeError
 }
 
 // IsServing is part of the tabletserver.Controller interface
@@ -146,6 +159,13 @@ func (tqsc *Controller) IsServing() bool {
 	return tqsc.queryServiceEnabled
 }
 
+// CurrentTarget returns the current target.
+func (tqsc *Controller) CurrentTarget() *querypb.Target {
+	tqsc.mu.Lock()
+	defer tqsc.mu.Unlock()
+	return proto.Clone(tqsc.target).(*querypb.Target)
+}
+
 // IsHealthy is part of the tabletserver.Controller interface
 func (tqsc *Controller) IsHealthy() error {
 	return nil
@@ -153,6 +173,11 @@ func (tqsc *Controller) IsHealthy() error {
 
 // ReloadSchema is part of the tabletserver.Controller interface
 func (tqsc *Controller) ReloadSchema(ctx context.Context) error {
+	return nil
+}
+
+// OnlineDDLExecutor is part of the tabletserver.Controller interface
+func (tqsc *Controller) OnlineDDLExecutor() vexec.Executor {
 	return nil
 }
 
@@ -187,20 +212,13 @@ func (tqsc *Controller) SchemaEngine() *schema.Engine {
 }
 
 // BroadcastHealth is part of the tabletserver.Controller interface
-func (tqsc *Controller) BroadcastHealth(terTimestamp int64, stats *querypb.RealtimeStats) {
+func (tqsc *Controller) BroadcastHealth() {
 	tqsc.mu.Lock()
 	defer tqsc.mu.Unlock()
 
 	tqsc.BroadcastData <- &BroadcastData{
-		TERTimestamp:  terTimestamp,
-		RealtimeStats: *stats,
-		Serving:       tqsc.queryServiceEnabled && (!tqsc.isInLameduck),
+		Serving: tqsc.queryServiceEnabled && (!tqsc.isInLameduck),
 	}
-}
-
-// HeartbeatLag is part of the tabletserver.Controller interface.
-func (tqsc *Controller) HeartbeatLag() (time.Duration, error) {
-	return 0, nil
 }
 
 // TopoServer is part of the tabletserver.Controller interface.

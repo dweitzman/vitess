@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,13 +17,18 @@ limitations under the License.
 package vtctl
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"path"
 
-	"github.com/golang/protobuf/proto"
-	"golang.org/x/net/context"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/encoding/prototext"
+
+	"context"
+
+	"google.golang.org/protobuf/proto"
 
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/wrangler"
@@ -42,7 +47,7 @@ func init() {
 	addCommand(topoGroupName, command{
 		"TopoCat",
 		commandTopoCat,
-		"[-cell <cell>] [-decode_proto] [-long] <path> [<path>...]",
+		"[-cell <cell>] [-decode_proto] [-decode_proto_json] [-long] <path> [<path>...]",
 		"Retrieves the file(s) at <path> from the topo service, and displays it. It can resolve wildcards, and decode the proto-encoded data."})
 
 	addCommand(topoGroupName, command{
@@ -54,9 +59,9 @@ func init() {
 
 // DecodeContent uses the filename to imply a type, and proto-decodes
 // the right object, then echoes it as a string.
-func DecodeContent(filename string, data []byte) (string, error) {
+func DecodeContent(filename string, data []byte, json bool) (string, error) {
 	name := path.Base(filename)
-
+	dir := path.Dir(filename)
 	var p proto.Message
 	switch name {
 	case topo.CellInfoFile:
@@ -75,19 +80,40 @@ func DecodeContent(filename string, data []byte) (string, error) {
 		p = new(vschemapb.SrvVSchema)
 	case topo.SrvKeyspaceFile:
 		p = new(topodatapb.SrvKeyspace)
+	case topo.RoutingRulesFile:
+		p = new(vschemapb.RoutingRules)
 	default:
-		return string(data), nil
+		switch dir {
+		case "/" + topo.GetExternalVitessClusterDir():
+			p = new(topodatapb.ExternalVitessCluster)
+		default:
+		}
+		if p == nil {
+			if json {
+				return "", fmt.Errorf("unknown topo protobuf type for %v", name)
+			}
+			return string(data), nil
+		}
 	}
 
 	if err := proto.Unmarshal(data, p); err != nil {
 		return string(data), err
 	}
-	return proto.MarshalTextString(p), nil
+
+	var marshalled []byte
+	var err error
+	if json {
+		marshalled, err = protojson.Marshal(p)
+	} else {
+		marshalled, err = prototext.Marshal(p)
+	}
+	return string(marshalled), err
 }
 
 func commandTopoCat(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
 	cell := subFlags.String("cell", topo.GlobalCell, "topology cell to cat the file from. Defaults to global cell.")
 	long := subFlags.Bool("long", false, "long listing.")
+	decodeProtoJSON := subFlags.Bool("decode_proto_json", false, "decode proto files and display them as json")
 	decodeProto := subFlags.Bool("decode_proto", false, "decode proto files and display them as text")
 	subFlags.Parse(args)
 	if subFlags.NArg() == 0 {
@@ -106,38 +132,18 @@ func commandTopoCat(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.F
 	if err != nil {
 		return err
 	}
-	hasError := false
-	for _, arg := range resolved {
-		data, version, err := conn.Get(ctx, arg)
-		if err != nil {
-			hasError = true
-			wr.Logger().Printf("TopoCat: Get(%v) failed: %v\n", arg, err)
-			continue
-		}
 
-		if *long {
-			wr.Logger().Printf("path=%v version=%v\n", arg, version)
-		}
-		decoded := ""
-		if *decodeProto {
-			decoded, err = DecodeContent(arg, data)
-			if err != nil {
-				wr.Logger().Warningf("TopoCat: cannot proto decode %v: %v", arg, err)
-				decoded = string(data)
-			}
-		} else {
-			decoded = string(data)
-		}
-		wr.Logger().Printf(decoded)
-		if len(decoded) > 0 && decoded[len(decoded)-1] != '\n' && *long {
-			wr.Logger().Printf("\n")
-		}
+	var topologyDecoder TopologyDecoder
+	switch {
+	case *decodeProtoJSON:
+		topologyDecoder = JSONTopologyDecoder{}
+	case *decodeProto:
+		topologyDecoder = ProtoTopologyDecoder{}
+	default:
+		topologyDecoder = PlainTopologyDecoder{}
 	}
-	if hasError {
-		return fmt.Errorf("TopoCat: some paths had errors")
-	}
-	return nil
 
+	return topologyDecoder.decode(ctx, resolved, conn, wr, *long)
 }
 
 func commandTopoCp(ctx context.Context, wr *wrangler.Wrangler, subFlags *flag.FlagSet, args []string) error {
@@ -178,4 +184,122 @@ func copyFileToTopo(ctx context.Context, ts *topo.Server, cell, from, to string)
 	}
 	_, err = conn.Update(ctx, to, data, nil)
 	return err
+}
+
+// TopologyDecoder interface for exporting out a leaf node in a readable form
+type TopologyDecoder interface {
+	decode(context.Context, []string, topo.Conn, *wrangler.Wrangler, bool) error
+}
+
+// ProtoTopologyDecoder exports topo node as a proto
+type ProtoTopologyDecoder struct{}
+
+// PlainTopologyDecoder exports topo node as plain text
+type PlainTopologyDecoder struct{}
+
+// JSONTopologyDecoder exports topo node as JSON
+type JSONTopologyDecoder struct{}
+
+func (d ProtoTopologyDecoder) decode(ctx context.Context, topoPaths []string, conn topo.Conn, wr *wrangler.Wrangler, long bool) error {
+	hasError := false
+	for _, topoPath := range topoPaths {
+		data, version, err := conn.Get(ctx, topoPath)
+		if err != nil {
+			hasError = true
+			wr.Logger().Printf("TopoCat: Get(%v) failed: %v\n", topoPath, err)
+			continue
+		}
+
+		if long {
+			wr.Logger().Printf("path=%v version=%v\n", topoPath, version)
+		}
+
+		decoded, err := DecodeContent(topoPath, data, false)
+		if err != nil {
+			wr.Logger().Warningf("TopoCat: cannot proto decode %v: %v", topoPath, err)
+			decoded = string(data)
+		}
+
+		wr.Logger().Printf(decoded)
+		if len(decoded) > 0 && decoded[len(decoded)-1] != '\n' && long {
+			wr.Logger().Printf("\n")
+		}
+	}
+
+	if hasError {
+		return fmt.Errorf("TopoCat: some paths had errors")
+	}
+	return nil
+}
+
+func (d PlainTopologyDecoder) decode(ctx context.Context, topoPaths []string, conn topo.Conn, wr *wrangler.Wrangler, long bool) error {
+	hasError := false
+	for _, topoPath := range topoPaths {
+		data, version, err := conn.Get(ctx, topoPath)
+		if err != nil {
+			hasError = true
+			wr.Logger().Printf("TopoCat: Get(%v) failed: %v\n", topoPath, err)
+			continue
+		}
+
+		if long {
+			wr.Logger().Printf("path=%v version=%v\n", topoPath, version)
+		}
+		decoded := string(data)
+		wr.Logger().Printf(decoded)
+		if len(decoded) > 0 && decoded[len(decoded)-1] != '\n' && long {
+			wr.Logger().Printf("\n")
+		}
+	}
+
+	if hasError {
+		return fmt.Errorf("TopoCat: some paths had errors")
+	}
+	return nil
+}
+
+func (d JSONTopologyDecoder) decode(ctx context.Context, topoPaths []string, conn topo.Conn, wr *wrangler.Wrangler, long bool) error {
+	hasError := false
+	var jsonData []interface{}
+	for _, topoPath := range topoPaths {
+		data, version, err := conn.Get(ctx, topoPath)
+		if err != nil {
+			hasError = true
+			wr.Logger().Printf("TopoCat: Get(%v) failed: %v\n", topoPath, err)
+			continue
+		}
+
+		decoded, err := DecodeContent(topoPath, data, true)
+		if err != nil {
+			hasError = true
+			wr.Logger().Printf("TopoCat: cannot proto decode %v: %v", topoPath, err)
+			continue
+		}
+
+		var jsonDatum map[string]interface{}
+		if err = json.Unmarshal([]byte(decoded), &jsonDatum); err != nil {
+			hasError = true
+			wr.Logger().Printf("TopoCat: cannot json Unmarshal %v: %v", topoPath, err)
+			continue
+		}
+
+		if long {
+			jsonDatum["__path"] = topoPath
+			jsonDatum["__version"] = version.String()
+		}
+		jsonData = append(jsonData, jsonDatum)
+	}
+
+	jsonBytes, err := json.Marshal(jsonData)
+	if err != nil {
+		hasError = true
+		wr.Logger().Printf("TopoCat: cannot json Marshal: %v", err)
+	} else {
+		wr.Logger().Printf(string(jsonBytes) + "\n")
+	}
+
+	if hasError {
+		return fmt.Errorf("TopoCat: some paths had errors")
+	}
+	return nil
 }

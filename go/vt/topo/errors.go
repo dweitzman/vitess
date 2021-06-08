@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vitess Authors.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package topo
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -80,8 +81,15 @@ func (e Error) Error() string {
 
 // IsErrType returns true if the error has the specified ErrorCode.
 func IsErrType(err error, code ErrorCode) bool {
+	var e Error
+
+	if errors.As(err, &e) {
+		return e.code == code
+	}
+
 	if e, ok := err.(Error); ok {
 		return e.code == code
 	}
+
 	return false
 }

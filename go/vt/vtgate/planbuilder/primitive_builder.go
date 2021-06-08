@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vitess Authors.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,13 +17,13 @@ limitations under the License.
 package planbuilder
 
 // primitiveBuilder is the top level type for building plans.
-// It contains the current builder tree, the symtab and
+// It contains the current logicalPlan tree, the symtab and
 // the jointab. It can create transient planBuilders due
 // to the recursive nature of SQL.
 type primitiveBuilder struct {
 	vschema ContextVSchema
 	jt      *jointab
-	bldr    builder
+	plan    logicalPlan
 	st      *symtab
 }
 

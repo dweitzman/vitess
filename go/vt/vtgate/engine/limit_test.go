@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/sqltypes"
 	querypb "vitess.io/vitess/go/vt/proto/query"
@@ -48,9 +50,7 @@ func TestLimitExecute(t *testing.T) {
 
 	// Test with limit smaller than input.
 	result, err := l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	wantResult := sqltypes.MakeTestResult(
 		fields,
 		"a|1",
@@ -82,20 +82,12 @@ func TestLimitExecute(t *testing.T) {
 	}
 
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, inputResult) {
 		t.Errorf("l.Execute:\n%v, want\n%v", result, wantResult)
 	}
 
 	// Test with limit higher than input.
-	wantResult = sqltypes.MakeTestResult(
-		fields,
-		"a|1",
-		"b|2",
-		"c|3",
-	)
 	inputResult = sqltypes.MakeTestResult(
 		fields,
 		"a|1",
@@ -111,11 +103,9 @@ func TestLimitExecute(t *testing.T) {
 	}
 
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
-	if !reflect.DeepEqual(result, inputResult) {
-		t.Errorf("l.Execute:\n%v, want\n%v", result, inputResult)
+	require.NoError(t, err)
+	if !reflect.DeepEqual(result, wantResult) {
+		t.Errorf("l.Execute:\n%v, want\n%v", result, wantResult)
 	}
 
 	// Test with bind vars.
@@ -139,9 +129,7 @@ func TestLimitExecute(t *testing.T) {
 	}
 
 	result, err = l.Execute(nil, map[string]*querypb.BindVariable{"l": sqltypes.Int64BindVariable(2)}, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n%v, want\n%v", result, wantResult)
 	}
@@ -174,9 +162,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 
 	// Test with offset 0
 	result, err := l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	wantResult := sqltypes.MakeTestResult(
 		fields,
 		"a|1",
@@ -212,9 +198,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 		"c|3",
 	)
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n got %v, want\n%v", result, wantResult)
 	}
@@ -244,9 +228,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 		"c|6",
 	)
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n got %v, want\n%v", result, wantResult)
 	}
@@ -277,9 +259,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 		"c|6",
 	)
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n got %v, want\n%v", result, wantResult)
 	}
@@ -308,9 +288,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 		"c|6",
 	)
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n got %v, want\n%v", result, wantResult)
 	}
@@ -338,9 +316,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 		fields,
 	)
 	result, err = l.Execute(nil, bindVars, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n got %v, want\n%v", result, wantResult)
 	}
@@ -366,9 +342,7 @@ func TestLimitOffsetExecute(t *testing.T) {
 		Input:  fp,
 	}
 	result, err = l.Execute(nil, map[string]*querypb.BindVariable{"l": sqltypes.Int64BindVariable(1), "o": sqltypes.Int64BindVariable(1)}, false)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(result, wantResult) {
 		t.Errorf("l.Execute:\n got %v, want\n%v", result, wantResult)
 	}
@@ -401,9 +375,7 @@ func TestLimitStreamExecute(t *testing.T) {
 		results = append(results, qr)
 		return nil
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	wantResults := sqltypes.MakeTestStreamingResults(
 		fields,
 		"a|1",
@@ -421,9 +393,7 @@ func TestLimitStreamExecute(t *testing.T) {
 		results = append(results, qr)
 		return nil
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(results, wantResults) {
 		t.Errorf("l.StreamExecute:\n%s, want\n%s", sqltypes.PrintResults(results), sqltypes.PrintResults(wantResults))
 	}
@@ -436,9 +406,7 @@ func TestLimitStreamExecute(t *testing.T) {
 		results = append(results, qr)
 		return nil
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	wantResults = sqltypes.MakeTestStreamingResults(
 		fields,
 		"a|1",
@@ -458,10 +426,51 @@ func TestLimitStreamExecute(t *testing.T) {
 		results = append(results, qr)
 		return nil
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	// wantResults is same as before.
+	if !reflect.DeepEqual(results, wantResults) {
+		t.Errorf("l.StreamExecute:\n%s, want\n%s", sqltypes.PrintResults(results), sqltypes.PrintResults(wantResults))
+	}
+}
+
+func TestOffsetStreamExecute(t *testing.T) {
+	bindVars := make(map[string]*querypb.BindVariable)
+	fields := sqltypes.MakeTestFields(
+		"col1|col2",
+		"int64|varchar",
+	)
+	inputResult := sqltypes.MakeTestResult(
+		fields,
+		"a|1",
+		"b|2",
+		"c|3",
+		"d|4",
+		"e|5",
+		"f|6",
+	)
+	fp := &fakePrimitive{
+		results: []*sqltypes.Result{inputResult},
+	}
+
+	l := &Limit{
+		Offset: int64PlanValue(2),
+		Count:  int64PlanValue(3),
+		Input:  fp,
+	}
+
+	var results []*sqltypes.Result
+	err := l.StreamExecute(nil, bindVars, false, func(qr *sqltypes.Result) error {
+		results = append(results, qr)
+		return nil
+	})
+	require.NoError(t, err)
+	wantResults := sqltypes.MakeTestStreamingResults(
+		fields,
+		"c|3",
+		"d|4",
+		"---",
+		"e|5",
+	)
 	if !reflect.DeepEqual(results, wantResults) {
 		t.Errorf("l.StreamExecute:\n%s, want\n%s", sqltypes.PrintResults(results), sqltypes.PrintResults(wantResults))
 	}
@@ -479,9 +488,7 @@ func TestLimitGetFields(t *testing.T) {
 	l := &Limit{Input: fp}
 
 	got, err := l.GetFields(nil, nil)
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	if !reflect.DeepEqual(got, result) {
 		t.Errorf("l.GetFields:\n%v, want\n%v", got, result)
 	}

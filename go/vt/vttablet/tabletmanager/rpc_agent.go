@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package tabletmanager
 import (
 	"time"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"vitess.io/vitess/go/vt/hook"
 	"vitess.io/vitess/go/vt/logutil"
@@ -31,9 +31,9 @@ import (
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 )
 
-// RPCAgent defines the interface implemented by the Agent for RPCs.
+// RPCTM defines the interface implemented by the TM for RPCs.
 // It is useful for RPC implementations to test their full stack.
-type RPCAgent interface {
+type RPCTM interface {
 	// RPC calls
 
 	// Various read-only methods
@@ -70,6 +70,8 @@ type RPCAgent interface {
 
 	UnlockTables(ctx context.Context) error
 
+	ExecuteQuery(ctx context.Context, query []byte, dbName string, maxrows int) (*querypb.QueryResult, error)
+
 	ExecuteFetchAsDba(ctx context.Context, query []byte, dbName string, maxrows int, disableBinlogs bool, reloadSchema bool) (*querypb.QueryResult, error)
 
 	ExecuteFetchAsAllPrivs(ctx context.Context, query []byte, dbName string, maxrows int, reloadSchema bool) (*querypb.QueryResult, error)
@@ -77,22 +79,31 @@ type RPCAgent interface {
 	ExecuteFetchAsApp(ctx context.Context, query []byte, maxrows int) (*querypb.QueryResult, error)
 
 	// Replication related methods
+	// Deprecated, use PrimaryStatus instead
+	MasterStatus(ctx context.Context) (*replicationdatapb.MasterStatus, error)
 
-	SlaveStatus(ctx context.Context) (*replicationdatapb.Status, error)
+	PrimaryStatus(ctx context.Context) (*replicationdatapb.MasterStatus, error)
 
+	ReplicationStatus(ctx context.Context) (*replicationdatapb.Status, error)
+
+	StopReplication(ctx context.Context) error
+
+	StopReplicationMinimum(ctx context.Context, position string, waitTime time.Duration) (string, error)
+
+	StartReplication(ctx context.Context) error
+
+	StartReplicationUntilAfter(ctx context.Context, position string, waitTime time.Duration) error
+
+	GetReplicas(ctx context.Context) ([]string, error)
+	// Deprecated, use PrimaryPosition instead
 	MasterPosition(ctx context.Context) (string, error)
 
-	StopSlave(ctx context.Context) error
+	PrimaryPosition(ctx context.Context) (string, error)
 
-	StopSlaveMinimum(ctx context.Context, position string, waitTime time.Duration) (string, error)
+	WaitForPosition(ctx context.Context, pos string) error
 
-	StartSlave(ctx context.Context) error
-
-	StartSlaveUntilAfter(ctx context.Context, position string, waitTime time.Duration) error
-
-	TabletExternallyReparented(ctx context.Context, externalID string) error
-
-	GetSlaves(ctx context.Context) ([]string, error)
+	// VExec generic API
+	VExec(ctx context.Context, query, workflow, keyspace string) (*querypb.QueryResult, error)
 
 	// VReplication API
 	VReplicationExec(ctx context.Context, query string) (*querypb.QueryResult, error)
@@ -102,31 +113,41 @@ type RPCAgent interface {
 
 	ResetReplication(ctx context.Context) error
 
+	// Deprecated, use InitPrimary instead
 	InitMaster(ctx context.Context) (string, error)
+
+	InitPrimary(ctx context.Context) (string, error)
 
 	PopulateReparentJournal(ctx context.Context, timeCreatedNS int64, actionName string, masterAlias *topodatapb.TabletAlias, pos string) error
 
-	InitSlave(ctx context.Context, parent *topodatapb.TabletAlias, replicationPosition string, timeCreatedNS int64) error
+	InitReplica(ctx context.Context, parent *topodatapb.TabletAlias, replicationPosition string, timeCreatedNS int64) error
 
-	DemoteMaster(ctx context.Context) (string, error)
+	// Deprecated, use DemotePrimary instead
+	DemoteMaster(ctx context.Context) (*replicationdatapb.MasterStatus, error)
 
+	// Deprecated, use UndoDemotePrimary instead
 	UndoDemoteMaster(ctx context.Context) error
 
-	PromoteSlaveWhenCaughtUp(ctx context.Context, replicationPosition string) (string, error)
+	DemotePrimary(ctx context.Context) (*replicationdatapb.MasterStatus, error)
 
-	SlaveWasPromoted(ctx context.Context) error
+	UndoDemotePrimary(ctx context.Context) error
 
-	SetMaster(ctx context.Context, parent *topodatapb.TabletAlias, timeCreatedNS int64, forceStartSlave bool) error
+	ReplicaWasPromoted(ctx context.Context) error
 
-	SlaveWasRestarted(ctx context.Context, parent *topodatapb.TabletAlias) error
+	// Deprecated, use SetReplicationSource instead
+	SetMaster(ctx context.Context, parent *topodatapb.TabletAlias, timeCreatedNS int64, waitPosition string, forceStartReplication bool) error
 
-	StopReplicationAndGetStatus(ctx context.Context) (*replicationdatapb.Status, error)
+	SetReplicationSource(ctx context.Context, parent *topodatapb.TabletAlias, timeCreatedNS int64, waitPosition string, forceStartReplication bool) error
 
-	PromoteSlave(ctx context.Context) (string, error)
+	StopReplicationAndGetStatus(ctx context.Context, stopReplicationMode replicationdatapb.StopReplicationMode) (StopReplicationAndGetStatusResponse, error)
+
+	ReplicaWasRestarted(ctx context.Context, parent *topodatapb.TabletAlias) error
+
+	PromoteReplica(ctx context.Context) (string, error)
 
 	// Backup / restore related methods
 
-	Backup(ctx context.Context, concurrency int, logger logutil.Logger) error
+	Backup(ctx context.Context, concurrency int, logger logutil.Logger, allowMaster bool) error
 
 	RestoreFromBackup(ctx context.Context, logger logutil.Logger) error
 

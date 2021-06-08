@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -24,10 +24,13 @@ limitations under the License.
 package s3backupstorage
 
 import (
+	"crypto/md5"
 	"crypto/tls"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"net/http"
 	"sort"
@@ -36,11 +39,15 @@ import (
 
 	"vitess.io/vitess/go/vt/log"
 
+	"context"
+
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/client"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
-	"golang.org/x/net/context"
 
 	"vitess.io/vitess/go/vt/concurrency"
 	"vitess.io/vitess/go/vt/mysqlctl/backupstorage"
@@ -49,6 +56,9 @@ import (
 var (
 	// AWS API region
 	region = flag.String("s3_backup_aws_region", "us-east-1", "AWS region to use")
+
+	// AWS request retries
+	retryCount = flag.Int("s3_backup_aws_retries", -1, "AWS request retries")
 
 	// AWS endpoint, defaults to amazonaws.com but appliances may use a different location
 	endpoint = flag.String("s3_backup_aws_endpoint", "", "endpoint of the S3 backend (region must be provided)")
@@ -68,7 +78,7 @@ var (
 	requiredLogLevel = flag.String("s3_backup_log_level", "LogOff", "determine the S3 loglevel to use from LogOff, LogDebug, LogDebugWithSigning, LogDebugWithHTTPBody, LogDebugWithRequestRetries, LogDebugWithRequestErrors")
 
 	// sse is the server-side encryption algorithm used when storing this object in S3
-	sse = flag.String("s3_backup_server_side_encryption", "", "server-side encryption algorithm (e.g., AES256, aws:kms)")
+	sse = flag.String("s3_backup_server_side_encryption", "", "server-side encryption algorithm (e.g., AES256, aws:kms, sse_c:/path/to/key/file)")
 
 	// path component delimiter
 	delimiter = "/"
@@ -78,9 +88,11 @@ type logNameToLogLevel map[string]aws.LogLevelType
 
 var logNameMap logNameToLogLevel
 
+const sseCustomerPrefix = "sse_c:"
+
 // S3BackupHandle implements the backupstorage.BackupHandle interface.
 type S3BackupHandle struct {
-	client    *s3.S3
+	client    s3iface.S3API
 	bs        *S3BackupStorage
 	dir       string
 	name      string
@@ -97,6 +109,21 @@ func (bh *S3BackupHandle) Directory() string {
 // Name is part of the backupstorage.BackupHandle interface.
 func (bh *S3BackupHandle) Name() string {
 	return bh.name
+}
+
+// RecordError is part of the concurrency.ErrorRecorder interface.
+func (bh *S3BackupHandle) RecordError(err error) {
+	bh.errors.RecordError(err)
+}
+
+// HasErrors is part of the concurrency.ErrorRecorder interface.
+func (bh *S3BackupHandle) HasErrors() bool {
+	return bh.errors.HasErrors()
+}
+
+// Error is part of the concurrency.ErrorRecorder interface.
+func (bh *S3BackupHandle) Error() error {
+	return bh.errors.Error()
 }
 
 // AddFile is part of the backupstorage.BackupHandle interface.
@@ -126,19 +153,18 @@ func (bh *S3BackupHandle) AddFile(ctx context.Context, filename string, filesize
 		})
 		object := objName(bh.dir, bh.name, filename)
 
-		var sseOption *string
-		if *sse != "" {
-			sseOption = sse
-		}
 		_, err := uploader.Upload(&s3manager.UploadInput{
 			Bucket:               bucket,
 			Key:                  object,
 			Body:                 reader,
-			ServerSideEncryption: sseOption,
+			ServerSideEncryption: bh.bs.s3SSE.awsAlg,
+			SSECustomerAlgorithm: bh.bs.s3SSE.customerAlg,
+			SSECustomerKey:       bh.bs.s3SSE.customerKey,
+			SSECustomerKeyMD5:    bh.bs.s3SSE.customerMd5,
 		})
 		if err != nil {
 			reader.CloseWithError(err)
-			bh.errors.RecordError(err)
+			bh.RecordError(err)
 		}
 	}()
 
@@ -151,7 +177,7 @@ func (bh *S3BackupHandle) EndBackup(ctx context.Context) error {
 		return fmt.Errorf("EndBackup cannot be called on read-only backup")
 	}
 	bh.waitGroup.Wait()
-	return bh.errors.Error()
+	return bh.Error()
 }
 
 // AbortBackup is part of the backupstorage.BackupHandle interface.
@@ -169,8 +195,11 @@ func (bh *S3BackupHandle) ReadFile(ctx context.Context, filename string) (io.Rea
 	}
 	object := objName(bh.dir, bh.name, filename)
 	out, err := bh.client.GetObject(&s3.GetObjectInput{
-		Bucket: bucket,
-		Key:    object,
+		Bucket:               bucket,
+		Key:                  object,
+		SSECustomerAlgorithm: bh.bs.s3SSE.customerAlg,
+		SSECustomerKey:       bh.bs.s3SSE.customerKey,
+		SSECustomerKeyMD5:    bh.bs.s3SSE.customerMd5,
 	})
 	if err != nil {
 		return nil, err
@@ -180,10 +209,51 @@ func (bh *S3BackupHandle) ReadFile(ctx context.Context, filename string) (io.Rea
 
 var _ backupstorage.BackupHandle = (*S3BackupHandle)(nil)
 
+type S3ServerSideEncryption struct {
+	awsAlg      *string
+	customerAlg *string
+	customerKey *string
+	customerMd5 *string
+}
+
+func (s3ServerSideEncryption *S3ServerSideEncryption) init() error {
+	s3ServerSideEncryption.reset()
+
+	if strings.HasPrefix(*sse, sseCustomerPrefix) {
+		sseCustomerKeyFile := strings.TrimPrefix(*sse, sseCustomerPrefix)
+		base64CodedKey, err := ioutil.ReadFile(sseCustomerKeyFile)
+		if err != nil {
+			log.Errorf(err.Error())
+			return err
+		}
+
+		decodedKey, err := base64.StdEncoding.DecodeString(string(base64CodedKey))
+		if err != nil {
+			decodedKey = base64CodedKey
+		}
+
+		md5Hash := md5.Sum(decodedKey)
+		s3ServerSideEncryption.customerAlg = aws.String("AES256")
+		s3ServerSideEncryption.customerKey = aws.String(string(decodedKey))
+		s3ServerSideEncryption.customerMd5 = aws.String(base64.StdEncoding.EncodeToString(md5Hash[:]))
+	} else if *sse != "" {
+		s3ServerSideEncryption.awsAlg = sse
+	}
+	return nil
+}
+
+func (s3ServerSideEncryption *S3ServerSideEncryption) reset() {
+	s3ServerSideEncryption.awsAlg = nil
+	s3ServerSideEncryption.customerAlg = nil
+	s3ServerSideEncryption.customerKey = nil
+	s3ServerSideEncryption.customerMd5 = nil
+}
+
 // S3BackupStorage implements the backupstorage.BackupStorage interface.
 type S3BackupStorage struct {
 	_client *s3.S3
 	mu      sync.Mutex
+	s3SSE   S3ServerSideEncryption
 }
 
 // ListBackups is part of the backupstorage.BackupStorage interface.
@@ -194,7 +264,14 @@ func (bs *S3BackupStorage) ListBackups(ctx context.Context, dir string) ([]backu
 		return nil, err
 	}
 
-	searchPrefix := objName(dir, "")
+	var searchPrefix *string
+	if dir == "/" {
+		searchPrefix = objName("")
+	} else {
+		searchPrefix = objName(dir, "")
+	}
+	log.Infof("objName: %v", searchPrefix)
+
 	query := &s3.ListObjectsV2Input{
 		Bucket:    bucket,
 		Delimiter: &delimiter,
@@ -311,6 +388,7 @@ func (bs *S3BackupStorage) Close() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	bs._client = nil
+	bs.s3SSE.reset()
 	return nil
 }
 
@@ -336,20 +414,38 @@ func (bs *S3BackupStorage) client() (*s3.S3, error) {
 		httpTransport := &http.Transport{TLSClientConfig: tlsClientConf}
 		httpClient := &http.Client{Transport: httpTransport}
 
-		bs._client = s3.New(session.New(),
-			&aws.Config{
-				HTTPClient:       httpClient,
-				LogLevel:         logLevel,
-				Endpoint:         aws.String(*endpoint),
-				Region:           aws.String(*region),
-				S3ForcePathStyle: aws.Bool(*forcePath),
+		session, err := session.NewSession()
+		if err != nil {
+			return nil, err
+		}
+
+		awsConfig := aws.Config{
+			HTTPClient:       httpClient,
+			LogLevel:         logLevel,
+			Endpoint:         aws.String(*endpoint),
+			Region:           aws.String(*region),
+			S3ForcePathStyle: aws.Bool(*forcePath),
+		}
+
+		if *retryCount >= 0 {
+			awsConfig = *request.WithRetryer(&awsConfig, &ClosedConnectionRetryer{
+				awsRetryer: &client.DefaultRetryer{
+					NumMaxRetries: *retryCount,
+				},
 			})
+		}
+
+		bs._client = s3.New(session, &awsConfig)
 
 		if len(*bucket) == 0 {
 			return nil, fmt.Errorf("-s3_backup_storage_bucket required")
 		}
 
 		if _, err := bs._client.HeadBucket(&s3.HeadBucketInput{Bucket: bucket}); err != nil {
+			return nil, err
+		}
+
+		if err := bs.s3SSE.init(); err != nil {
 			return nil, err
 		}
 	}

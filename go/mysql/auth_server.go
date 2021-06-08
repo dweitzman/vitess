@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -19,13 +19,16 @@ package mysql
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"net"
 	"strings"
 
 	"vitess.io/vitess/go/vt/log"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 // AuthServer is the interface that servers must implement to validate
@@ -116,8 +119,8 @@ func NewSalt() ([]byte, error) {
 	return salt, nil
 }
 
-// ScramblePassword computes the hash of the password using 4.1+ method.
-func ScramblePassword(salt, password []byte) []byte {
+// ScrambleMysqlNativePassword computes the hash of the password using 4.1+ method.
+func ScrambleMysqlNativePassword(salt, password []byte) []byte {
 	if len(password) == 0 {
 		return nil
 	}
@@ -185,10 +188,59 @@ func isPassScrambleMysqlNativePassword(reply, salt []byte, mysqlNativePassword s
 	crypt.Write(hashStage1)
 	candidateHash2 := crypt.Sum(nil)
 
-	if bytes.Compare(candidateHash2, hash) != 0 {
-		return false
+	return bytes.Equal(candidateHash2, hash)
+}
+
+// ScrambleCachingSha2Password computes the hash of the password using SHA256 as required by
+// caching_sha2_password plugin for "fast" authentication
+func ScrambleCachingSha2Password(salt []byte, password []byte) []byte {
+	if len(password) == 0 {
+		return nil
 	}
-	return true
+
+	// stage1Hash = SHA256(password)
+	crypt := sha256.New()
+	crypt.Write(password)
+	stage1 := crypt.Sum(nil)
+
+	// scrambleHash = SHA256(SHA256(stage1Hash) + salt)
+	crypt.Reset()
+	crypt.Write(stage1)
+	innerHash := crypt.Sum(nil)
+
+	crypt.Reset()
+	crypt.Write(innerHash)
+	crypt.Write(salt)
+	scramble := crypt.Sum(nil)
+
+	// token = stage1Hash XOR scrambleHash
+	for i := range stage1 {
+		stage1[i] ^= scramble[i]
+	}
+
+	return stage1
+}
+
+// EncryptPasswordWithPublicKey obfuscates the password and encrypts it with server's public key as required by
+// caching_sha2_password plugin for "full" authentication
+func EncryptPasswordWithPublicKey(salt []byte, password []byte, pub *rsa.PublicKey) ([]byte, error) {
+	if len(password) == 0 {
+		return nil, nil
+	}
+
+	buffer := make([]byte, len(password)+1)
+	copy(buffer, password)
+	for i := range buffer {
+		buffer[i] ^= salt[i%len(salt)]
+	}
+
+	sha1Hash := sha1.New()
+	enc, err := rsa.EncryptOAEP(sha1Hash, rand.Reader, pub, buffer, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return enc, nil
 }
 
 // Constants for the dialog plugin.
@@ -226,7 +278,7 @@ func AuthServerReadPacketString(c *Conn) (string, error) {
 		return "", err
 	}
 	if len(data) == 0 || data[len(data)-1] != 0 {
-		return "", fmt.Errorf("received invalid response packet, datalen=%v", len(data))
+		return "", vterrors.Errorf(vtrpc.Code_INTERNAL, "received invalid response packet, datalen=%v", len(data))
 	}
 	return string(data[:len(data)-1]), nil
 }
@@ -244,6 +296,6 @@ func AuthServerNegotiateClearOrDialog(c *Conn, method string) (string, error) {
 		return AuthServerReadPacketString(c)
 
 	default:
-		return "", fmt.Errorf("unrecognized method: %v", method)
+		return "", vterrors.Errorf(vtrpc.Code_INTERNAL, "unrecognized method: %v", method)
 	}
 }

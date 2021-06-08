@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,14 +19,16 @@ package topo
 import (
 	"encoding/json"
 	"flag"
-	"fmt"
 	"os"
 	"os/user"
 	"path"
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
+	"context"
+
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
 	"vitess.io/vitess/go/trace"
 	"vitess.io/vitess/go/vt/log"
@@ -40,11 +42,6 @@ var (
 	// locking a shard / keyspace.
 	// Now used only for unlock operations
 	defaultLockTimeout = 30 * time.Second
-
-	// Deprecated
-	// LockTimeout is the command line flag that introduces a shorter
-	// timeout for locking topology structures.
-	deprecatedLockTimeout = flag.Duration("lock_timeout", defaultLockTimeout, "deprecated: timeout for acquiring topology locks, use remote_operation_timeout")
 
 	// RemoteOperationTimeout is used for operations where we have to
 	// call out to another process.
@@ -87,7 +84,7 @@ func newLock(action string) *Lock {
 func (l *Lock) ToJSON() (string, error) {
 	data, err := json.MarshalIndent(l, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("cannot JSON-marshal node: %v", err)
+		return "", vterrors.Wrapf(err, "cannot JSON-marshal node")
 	}
 	return string(data), nil
 }
@@ -105,7 +102,7 @@ type locksInfo struct {
 	// lock different things.
 	mu sync.Mutex
 
-	// info contans all the locks we took. It is indexed by
+	// info contains all the locks we took. It is indexed by
 	// keyspace (for keyspaces) or keyspace/shard (for shards).
 	info map[string]*lockInfo
 }
@@ -129,7 +126,7 @@ var locksKey locksKeyType
 //     as well as the associated horizontal resharding operations.
 //   * vertical resharding: includes changing the keyspace 'ServedFrom'
 //     field, as well as the associated vertical resharding operations.
-//   * 'vtctl SetShardServedTypes' emergency operations
+//   * 'vtctl SetShardIsMasterServing' emergency operations
 //   * 'vtctl SetShardTabletControl' emergency operations
 //   * 'vtctl SourceShardAdd' and 'vtctl SourceShardDelete' emergency operations
 // * keyspace-wide schema changes
@@ -146,7 +143,7 @@ func (ts *Server) LockKeyspace(ctx context.Context, keyspace, action string) (co
 
 	// check that we're not already locked
 	if _, ok = i.info[keyspace]; ok {
-		return nil, nil, fmt.Errorf("lock for keyspace %v is already held", keyspace)
+		return nil, nil, vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "lock for keyspace %v is already held", keyspace)
 	}
 
 	// lock
@@ -169,7 +166,7 @@ func (ts *Server) LockKeyspace(ctx context.Context, keyspace, action string) (co
 			if *finalErr != nil {
 				log.Errorf("trying to unlock keyspace %v multiple times", keyspace)
 			} else {
-				*finalErr = fmt.Errorf("trying to unlock keyspace %v multiple times", keyspace)
+				*finalErr = vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "trying to unlock keyspace %v multiple times", keyspace)
 			}
 			return
 		}
@@ -193,7 +190,7 @@ func CheckKeyspaceLocked(ctx context.Context, keyspace string) error {
 	// extract the locksInfo pointer
 	i, ok := ctx.Value(locksKey).(*locksInfo)
 	if !ok {
-		return fmt.Errorf("keyspace %v is not locked (no locksInfo)", keyspace)
+		return vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "keyspace %v is not locked (no locksInfo)", keyspace)
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -201,7 +198,7 @@ func CheckKeyspaceLocked(ctx context.Context, keyspace string) error {
 	// find the individual entry
 	_, ok = i.info[keyspace]
 	if !ok {
-		return fmt.Errorf("keyspace %v is not locked (no lockInfo in map)", keyspace)
+		return vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "keyspace %v is not locked (no lockInfo in map)", keyspace)
 	}
 
 	// TODO(alainjobart): check the lock server implementation
@@ -219,8 +216,7 @@ func (l *Lock) lockKeyspace(ctx context.Context, ts *Server, keyspace string) (L
 	ctx, cancel := context.WithTimeout(ctx, *RemoteOperationTimeout)
 	defer cancel()
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.LockKeyspaceForAction")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.LockKeyspaceForAction")
 	span.Annotate("action", l.Action)
 	span.Annotate("keyspace", keyspace)
 	defer span.Finish()
@@ -244,8 +240,7 @@ func (l *Lock) unlockKeyspace(ctx context.Context, ts *Server, keyspace string, 
 	ctx, cancel := context.WithTimeout(ctx, defaultLockTimeout)
 	defer cancel()
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.UnlockKeyspaceForAction")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.UnlockKeyspaceForAction")
 	span.Annotate("action", l.Action)
 	span.Annotate("keyspace", keyspace)
 	defer span.Finish()
@@ -291,7 +286,7 @@ func (ts *Server) LockShard(ctx context.Context, keyspace, shard, action string)
 	// check that we're not already locked
 	mapKey := keyspace + "/" + shard
 	if _, ok = i.info[mapKey]; ok {
-		return nil, nil, fmt.Errorf("lock for shard %v/%v is already held", keyspace, shard)
+		return nil, nil, vterrors.Errorf(vtrpc.Code_INVALID_ARGUMENT, "lock for shard %v/%v is already held", keyspace, shard)
 	}
 
 	// lock
@@ -314,7 +309,7 @@ func (ts *Server) LockShard(ctx context.Context, keyspace, shard, action string)
 			if *finalErr != nil {
 				log.Errorf("trying to unlock shard %v/%v multiple times", keyspace, shard)
 			} else {
-				*finalErr = fmt.Errorf("trying to unlock shard %v/%v multiple times", keyspace, shard)
+				*finalErr = vterrors.Errorf(vtrpc.Code_INTERNAL, "trying to unlock shard %v/%v multiple times", keyspace, shard)
 			}
 			return
 		}
@@ -338,7 +333,7 @@ func CheckShardLocked(ctx context.Context, keyspace, shard string) error {
 	// extract the locksInfo pointer
 	i, ok := ctx.Value(locksKey).(*locksInfo)
 	if !ok {
-		return fmt.Errorf("shard %v/%v is not locked (no locksInfo)", keyspace, shard)
+		return vterrors.Errorf(vtrpc.Code_INTERNAL, "shard %v/%v is not locked (no locksInfo)", keyspace, shard)
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -347,7 +342,7 @@ func CheckShardLocked(ctx context.Context, keyspace, shard string) error {
 	mapKey := keyspace + "/" + shard
 	li, ok := i.info[mapKey]
 	if !ok {
-		return fmt.Errorf("shard %v/%v is not locked (no lockInfo in map)", keyspace, shard)
+		return vterrors.Errorf(vtrpc.Code_INTERNAL, "shard %v/%v is not locked (no lockInfo in map)", keyspace, shard)
 	}
 
 	// Check the lock server implementation still holds the lock.
@@ -362,8 +357,7 @@ func (l *Lock) lockShard(ctx context.Context, ts *Server, keyspace, shard string
 	ctx, cancel := context.WithTimeout(ctx, *RemoteOperationTimeout)
 	defer cancel()
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.LockShardForAction")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.LockShardForAction")
 	span.Annotate("action", l.Action)
 	span.Annotate("keyspace", keyspace)
 	span.Annotate("shard", shard)
@@ -387,8 +381,7 @@ func (l *Lock) unlockShard(ctx context.Context, ts *Server, keyspace, shard stri
 	ctx, cancel := context.WithTimeout(ctx, defaultLockTimeout)
 	defer cancel()
 
-	span := trace.NewSpanFromContext(ctx)
-	span.StartClient("TopoServer.UnlockShardForAction")
+	span, ctx := trace.NewSpan(ctx, "TopoServer.UnlockShardForAction")
 	span.Annotate("action", l.Action)
 	span.Annotate("keyspace", keyspace)
 	span.Annotate("shard", shard)

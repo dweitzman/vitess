@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -73,7 +73,6 @@ func MakeTestResult(fields []*querypb.Field, rows ...string) *Result {
 			result.Rows[i][j] = MakeTrusted(fields[j].Type, []byte(col))
 		}
 	}
-	result.RowsAffected = uint64(len(result.Rows))
 	return result
 }
 
@@ -146,9 +145,5 @@ func PrintResults(results []*Result) string {
 }
 
 func split(str string) []string {
-	splits := strings.Split(str, "|")
-	for i, v := range splits {
-		splits[i] = strings.TrimSpace(v)
-	}
-	return splits
+	return strings.Split(str, "|")
 }

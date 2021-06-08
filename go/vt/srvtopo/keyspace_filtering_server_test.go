@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vitess Authors.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import (
 	"sync"
 	"testing"
 
-	"golang.org/x/net/context"
+	"context"
 
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
@@ -89,7 +89,7 @@ func doTestGetSrvKeyspaceNames(
 	want []string,
 	wantErr error,
 ) {
-	got, gotErr := f.GetSrvKeyspaceNames(stockCtx, cell)
+	got, gotErr := f.GetSrvKeyspaceNames(stockCtx, cell, false)
 
 	if got == nil {
 		t.Errorf("GetSrvKeyspaceNames failed: should not return nil")

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 
@@ -39,6 +40,12 @@ var (
 
 	// QueryLogFormat controls the format of the query log (either text or json)
 	QueryLogFormat = flag.String("querylog-format", "text", "format for query logs (\"text\" or \"json\")")
+
+	// QueryLogFilterTag contains an optional string that must be present in the query for it to be logged
+	QueryLogFilterTag = flag.String("querylog-filter-tag", "", "string that must be present in the query for it to be logged; if using a value as the tag, you need to disable query normalization")
+
+	// QueryLogRowThreshold only log queries returning or affecting this many rows
+	QueryLogRowThreshold = flag.Uint64("querylog-row-threshold", 0, "Number of rows a query has to return or affect before being logged; not useful for streaming queries. 0 means all queries will be logged.")
 
 	sendCount      = stats.NewCountersWithSingleLabel("StreamlogSend", "stream log send count", "logger_names")
 	deliveredCount = stats.NewCountersWithMultiLabels(
@@ -171,9 +178,9 @@ func (logger *StreamLogger) LogToFile(path string, logf LogFormatter) (chan inte
 	go func() {
 		for {
 			select {
-			case record, _ := <-logChan:
+			case record := <-logChan:
 				logf(f, formatParams, record)
-			case _, _ = <-rotateChan:
+			case <-rotateChan:
 				f.Close()
 				f, _ = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 			}
@@ -200,4 +207,23 @@ func GetFormatter(logger *StreamLogger) LogFormatter {
 		}
 		return fmter.Logf(w, params)
 	}
+}
+
+// ShouldEmitLog returns whether the log with the given SQL query
+// should be emitted or filtered
+func ShouldEmitLog(sql string, rowsAffected, rowsReturned uint64) bool {
+	if *QueryLogRowThreshold > maxUint64(rowsAffected, rowsReturned) && *QueryLogFilterTag == "" {
+		return false
+	}
+	if *QueryLogFilterTag != "" {
+		return strings.Contains(sql, *QueryLogFilterTag)
+	}
+	return true
+}
+
+func maxUint64(a, b uint64) uint64 {
+	if a < b {
+		return b
+	}
+	return a
 }

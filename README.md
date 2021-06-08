@@ -4,6 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/vitess.io/vitess)](https://goreportcard.com/report/vitess.io/vitess)
 [![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fvitessio%2Fvitess.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2Fvitessio%2Fvitess?ref=badge_shield)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/1724/badge)](https://bestpractices.coreinfrastructure.org/projects/1724)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=vitessio&metric=coverage)](https://sonarcloud.io/dashboard?id=vitessio)
 
 # Vitess 
 
@@ -23,19 +24,25 @@ For more about Vitess, please visit [vitess.io](https://vitess.io).
 Vitess has a growing community. You can view the list of adopters
 [here](https://github.com/vitessio/vitess/blob/master/ADOPTERS.md).
 
-## Contact
+## Reporting a Problem, Issue, or Bug
+To report a problem, the best way to get attention is to create a GitHub [issue](.https://github.com/vitessio/vitess/issues ) using proper severity level based on this [guide](https://github.com/vitessio/vitess/blob/master/SEVERITY.md). 
 
-Ask questions in the
-[vitess@googlegroups.com](https://groups.google.com/forum/#!forum/vitess)
-discussion forum.
+For topics that are better discussed live, please join the [Vitess Slack](https://vitess.io/slack) workspace.
+You may post any questions on the #general channel or join some of the special-interest channels.
 
-For topics that are better discussed live, please join the
-[Vitess Slack](https://bit.ly/vitess-slack) workspace.
+Follow [Vitess Blog](https://blog.vitess.io/) for low-frequency updates like new features and releases.
 
-Subscribe to
-[vitess-announce@googlegroups.com](https://groups.google.com/forum/#!forum/vitess-announce)
-or the [Vitess Blog](https://blog.vitess.io/)
-for low-frequency updates like new features and releases.
+## Security
+
+### Reporting Security Vulnerabilities
+
+To report a security vulnerability, please email [vitess-maintainers](mailto:cncf-vitess-maintainers@lists.cncf.io).
+
+See [Security](SECURITY.md) for a full outline of the security process.
+
+### Security Audit
+
+A third party security audit was performed by Cure53. You can see the full report [here](doc/VIT-01-report.pdf).
 
 ## License
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package automation
 import (
 	"testing"
 
-	"github.com/golang/protobuf/proto"
+	"google.golang.org/protobuf/encoding/prototext"
 )
 
 func TestHorizontalReshardingTaskEmittedTasks(t *testing.T) {
@@ -46,6 +46,6 @@ func TestHorizontalReshardingTaskEmittedTasks(t *testing.T) {
 
 	// TODO(mberlin): Check emitted tasks against expected output.
 	for _, tc := range newTaskContainers {
-		t.Logf("new tasks: %v", proto.MarshalTextString(tc))
+		t.Logf("new tasks: %v", prototext.Format(tc))
 	}
 }

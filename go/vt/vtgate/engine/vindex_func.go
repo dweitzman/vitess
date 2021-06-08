@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,9 @@ package engine
 
 import (
 	"encoding/json"
+	"fmt"
+
+	"vitess.io/vitess/go/vt/vtgate/evalengine"
 
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/key"
@@ -35,28 +38,16 @@ type VindexFunc struct {
 	// Fields is the field info for the result.
 	Fields []*querypb.Field
 	// Cols contains source column numbers: 0 for id, 1 for keyspace_id.
-	Cols   []int
-	Vindex vindexes.Vindex
+	Cols []int
+	// TODO(sougou): add support for MultiColumn.
+	Vindex vindexes.SingleColumn
 	Value  sqltypes.PlanValue
-}
 
-// MarshalJSON serializes the VindexFunc into a JSON representation.
-// It's used for testing and diagnostics.
-func (vf *VindexFunc) MarshalJSON() ([]byte, error) {
-	v := struct {
-		Opcode VindexOpcode
-		Fields []*querypb.Field
-		Cols   []int
-		Vindex string
-		Value  sqltypes.PlanValue
-	}{
-		Opcode: vf.Opcode,
-		Fields: vf.Fields,
-		Cols:   vf.Cols,
-		Vindex: vf.Vindex.String(),
-		Value:  vf.Value,
-	}
-	return json.Marshal(v)
+	// VindexFunc does not take inputs
+	noInputs
+
+	// VindexFunc does not need to work inside a tx
+	noTxNeeded
 }
 
 // VindexOpcode is the opcode for a VindexFunc.
@@ -82,6 +73,16 @@ func (code VindexOpcode) MarshalJSON() ([]byte, error) {
 // RouteType returns a description of the query routing type used by the primitive
 func (vf *VindexFunc) RouteType() string {
 	return vindexOpcodeName[vf.Opcode]
+}
+
+// GetKeyspaceName specifies the Keyspace that this primitive routes to.
+func (vf *VindexFunc) GetKeyspaceName() string {
+	return ""
+}
+
+// GetTableName specifies the table that this primitive routes to.
+func (vf *VindexFunc) GetTableName() string {
+	return ""
 }
 
 // Execute performs a non-streaming exec.
@@ -111,7 +112,7 @@ func (vf *VindexFunc) mapVindex(vcursor VCursor, bindVars map[string]*querypb.Bi
 	if err != nil {
 		return nil, err
 	}
-	vkey, err := sqltypes.Cast(k, sqltypes.VarBinary)
+	vkey, err := evalengine.Cast(k, sqltypes.VarBinary)
 	if err != nil {
 		return nil, err
 	}
@@ -127,20 +128,31 @@ func (vf *VindexFunc) mapVindex(vcursor VCursor, bindVars map[string]*querypb.Bi
 	case key.DestinationKeyRange:
 		if d.KeyRange != nil {
 			result.Rows = append(result.Rows, vf.buildRow(vkey, nil, d.KeyRange))
-			result.RowsAffected = 1
 		}
 	case key.DestinationKeyspaceID:
 		if len(d) > 0 {
-			result.Rows = [][]sqltypes.Value{
-				vf.buildRow(vkey, d, nil),
+			if vcursor != nil {
+				resolvedShards, _, err := vcursor.ResolveDestinations(vcursor.GetKeyspace(), nil, []key.Destination{d})
+				if err != nil {
+					return nil, err
+				}
+				kr, err := key.ParseShardingSpec(resolvedShards[0].Target.Shard)
+				if err != nil {
+					return nil, err
+				}
+				result.Rows = [][]sqltypes.Value{
+					vf.buildRow(vkey, d, kr[0]),
+				}
+			} else {
+				result.Rows = [][]sqltypes.Value{
+					vf.buildRow(vkey, d, nil),
+				}
 			}
-			result.RowsAffected = 1
 		}
 	case key.DestinationKeyspaceIDs:
 		for _, ksid := range d {
 			result.Rows = append(result.Rows, vf.buildRow(vkey, ksid, nil))
 		}
-		result.RowsAffected = uint64(len(d))
 	case key.DestinationNone:
 		// Nothing to do.
 	default:
@@ -173,9 +185,43 @@ func (vf *VindexFunc) buildRow(id sqltypes.Value, ksid []byte, kr *topodatapb.Ke
 			} else {
 				row = append(row, sqltypes.NULL)
 			}
+		case 4:
+			if ksid != nil {
+				row = append(row, sqltypes.NewVarBinary(fmt.Sprintf("%x", ksid)))
+			} else {
+				row = append(row, sqltypes.NULL)
+			}
+		case 5:
+			if ksid != nil {
+				row = append(row, sqltypes.NewVarBinary(key.KeyRangeString(kr)))
+			} else {
+				row = append(row, sqltypes.NULL)
+			}
 		default:
 			panic("BUG: unexpected column number")
 		}
 	}
 	return row
+}
+
+func (vf *VindexFunc) description() PrimitiveDescription {
+	fields := map[string]string{}
+	for _, field := range vf.Fields {
+		fields[field.Name] = field.Type.String()
+	}
+
+	other := map[string]interface{}{
+		"Fields":  fields,
+		"Columns": vf.Cols,
+		"Value":   vf.Value,
+	}
+	if vf.Vindex != nil {
+		other["Vindex"] = vf.Vindex.String()
+	}
+
+	return PrimitiveDescription{
+		OperatorType: "VindexFunc",
+		Variant:      vindexOpcodeName[vf.Opcode],
+		Other:        other,
+	}
 }

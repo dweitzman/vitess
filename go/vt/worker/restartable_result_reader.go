@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,14 +18,13 @@ package worker
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"strings"
 	"time"
 
 	"vitess.io/vitess/go/vt/vterrors"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"vitess.io/vitess/go/sqlescape"
 	"vitess.io/vitess/go/sqltypes"
@@ -101,18 +100,18 @@ func tryToConnect(r *RestartableResultReader) error {
 		var err error
 		var retryable bool
 		if retryable, err = r.getTablet(); err != nil {
-			err = fmt.Errorf("tablet=unknown: %v", err)
+			err = vterrors.Wrap(err, "tablet=unknown")
 			goto retry
 		}
 		if retryable, err = r.startStream(); err != nil {
-			err = fmt.Errorf("tablet=%v: %v", topoproto.TabletAliasString(r.tablet.Alias), err)
+			err = vterrors.Wrapf(err, "tablet=%v", topoproto.TabletAliasString(r.tablet.Alias))
 			goto retry
 		}
 		return nil
 
 	retry:
 		if !retryable || attempt > 1 {
-			return fmt.Errorf("failed to initialize tablet connection: retryable %v, %v", retryable, err)
+			return vterrors.Wrapf(err, "failed to initialize tablet connection: retryable %v", retryable)
 		}
 		statsRetryCount.Add(1)
 		log.Infof("retrying after error: %v", err)
@@ -169,7 +168,7 @@ func (r *RestartableResultReader) getTablet() (bool, error) {
 	return false /* retryable */, nil
 }
 
-// startStream assumes that getTablet() was succesfully called before and now
+// startStream assumes that getTablet() was successfully called before and now
 // tries to connect to the set tablet and start the streaming query.
 // If the method returns an error, the first return value specifies if it is
 // okay to retry.
@@ -270,7 +269,7 @@ func (r *RestartableResultReader) nextWithRetries() (*sqltypes.Result, error) {
 		result, err = r.output.Recv()
 		if err == nil || err == io.EOF {
 			alias := topoproto.TabletAliasString(r.tablet.Alias)
-			log.V(2).Infof("tablet=%v table=%v chunk=%v: Successfully restarted streaming query with query '%v' after %.1f seconds.", alias, r.td.Name, r.chunk, r.query, time.Now().Sub(start).Seconds())
+			log.V(2).Infof("tablet=%v table=%v chunk=%v: Successfully restarted streaming query with query '%v' after %.1f seconds.", alias, r.td.Name, r.chunk, r.query, time.Since(start).Seconds())
 			if attempt == 2 {
 				statsStreamingQueryRestartsSameTabletCounters.Add(alias, 1)
 			} else {
@@ -296,14 +295,15 @@ func (r *RestartableResultReader) nextWithRetries() (*sqltypes.Result, error) {
 		}
 
 		deadline, _ := retryCtx.Deadline()
-		log.V(2).Infof("tablet=%v table=%v chunk=%v: Failed to restart streaming query (attempt %d) with query '%v'. Retrying to restart stream on a different tablet (for up to %.1f minutes). Next retry is in %.1f seconds. Error: %v", alias, r.td.Name, r.chunk, attempt, r.query, deadline.Sub(time.Now()).Minutes(), executeFetchRetryTime.Seconds(), err)
+		log.V(2).Infof("tablet=%v table=%v chunk=%v: Failed to restart streaming query (attempt %d) with query '%v'. Retrying to restart stream on a different tablet (for up to %.1f minutes). Next retry is in %.1f seconds. Error: %v", alias, r.td.Name, r.chunk, attempt, r.query, time.Until(deadline).Minutes(), executeFetchRetryTime.Seconds(), err)
 
 		select {
 		case <-retryCtx.Done():
-			if retryCtx.Err() == context.DeadlineExceeded {
-				return nil, fmt.Errorf("%v: failed to restart the streaming connection after retrying for %v", r.tp.description(), *retryDuration)
+			err := retryCtx.Err()
+			if err == context.DeadlineExceeded {
+				return nil, vterrors.Wrapf(err, "%v: failed to restart the streaming connection after retrying for %v", r.tp.description(), *retryDuration)
 			}
-			return nil, fmt.Errorf("%v: interrupted (context error: %v) while trying to restart the streaming connection (%.1f minutes elapsed so far)", r.tp.description(), retryCtx.Err(), time.Now().Sub(start).Minutes())
+			return nil, vterrors.Wrapf(err, "%v: interrupted while trying to restart the streaming connection (%.1f minutes elapsed so far)", r.tp.description(), time.Since(start).Minutes())
 		case <-time.After(*executeFetchRetryTime):
 			// Make a pause between the retries to avoid hammering the servers.
 		}

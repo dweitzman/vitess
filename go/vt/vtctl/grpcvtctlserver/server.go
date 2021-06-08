@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -39,12 +39,13 @@ import (
 
 // VtctlServer is our RPC server
 type VtctlServer struct {
+	vtctlservicepb.UnimplementedVtctlServer
 	ts *topo.Server
 }
 
 // NewVtctlServer returns a new Vtctl Server for the topo server.
 func NewVtctlServer(ts *topo.Server) *VtctlServer {
-	return &VtctlServer{ts}
+	return &VtctlServer{ts: ts}
 }
 
 // ExecuteVtctlCommand is part of the vtctldatapb.VtctlServer interface

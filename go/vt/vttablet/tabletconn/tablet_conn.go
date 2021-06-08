@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@ package tabletconn
 
 import (
 	"flag"
+	"sync"
 
 	"vitess.io/vitess/go/vt/grpcclient"
 	"vitess.io/vitess/go/vt/log"
@@ -43,10 +44,6 @@ var (
 // HostName and PortMap should be used (and maybe the alias for debug
 // messages).
 //
-// When using this TabletDialer to talk to a l2vtgate, only the Hostname
-// will be set to the full address to dial. Implementations should detect
-// this use case as the portmap will then be empty.
-//
 // timeout represents the connection timeout. If set to 0, this
 // connection should be established in the background and the
 // TabletDialer should return right away.
@@ -54,9 +51,14 @@ type TabletDialer func(tablet *topodatapb.Tablet, failFast grpcclient.FailFast) 
 
 var dialers = make(map[string]TabletDialer)
 
+// mu This mutex helps us prevent data races when registering / getting dialers
+var mu sync.Mutex
+
 // RegisterDialer is meant to be used by TabletDialer implementations
 // to self register.
 func RegisterDialer(name string, dialer TabletDialer) {
+	mu.Lock()
+	defer mu.Unlock()
 	if _, ok := dialers[name]; ok {
 		log.Fatalf("Dialer %s already exists", name)
 	}
@@ -65,6 +67,8 @@ func RegisterDialer(name string, dialer TabletDialer) {
 
 // GetDialer returns the dialer to use, described by the command line flag
 func GetDialer() TabletDialer {
+	mu.Lock()
+	defer mu.Unlock()
 	td, ok := dialers[*TabletProtocol]
 	if !ok {
 		log.Exitf("No dialer registered for tablet protocol %s", *TabletProtocol)

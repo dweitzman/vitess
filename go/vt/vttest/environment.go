@@ -1,6 +1,5 @@
 /*
-Copyright 2017 Google Inc.
-Copyright 2017 GitHub Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -116,25 +115,11 @@ func GetMySQLOptions(flavor string) (string, []string, error) {
 		flavor = DefaultMySQLFlavor
 	}
 
-	mycnf := []string{"config/mycnf/vtcombo.cnf"}
-	switch flavor {
-	case "MariaDB103":
-		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
-		mycnf = append(mycnf, "config/mycnf/master_mariadb103.cnf")
-	case "MariaDB":
-		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
-		mycnf = append(mycnf, "config/mycnf/master_mariadb.cnf")
-
-	case "MySQL56":
-		mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
-		mycnf = append(mycnf, "config/mycnf/master_mysql56.cnf")
-
-	default:
-		return "", nil, fmt.Errorf("unknown mysql flavor: %s", flavor)
-	}
+	mycnf := []string{}
+	mycnf = append(mycnf, "config/mycnf/default-fast.cnf")
 
 	for i, cnf := range mycnf {
-		mycnf[i] = path.Join(os.Getenv("VTTOP"), cnf)
+		mycnf[i] = path.Join(os.Getenv("VTROOT"), cnf)
 	}
 
 	return flavor, mycnf, nil
@@ -154,11 +139,12 @@ func (env *LocalTestEnv) BinaryPath(binary string) string {
 func (env *LocalTestEnv) MySQLManager(mycnf []string, snapshot string) (MySQLManager, error) {
 	return &Mysqlctl{
 		Binary:    env.BinaryPath("mysqlctl"),
-		InitFile:  path.Join(os.Getenv("VTTOP"), "config/init_db.sql"),
+		InitFile:  path.Join(os.Getenv("VTROOT"), "config/init_db.sql"),
 		Directory: env.TmpPath,
 		Port:      env.PortForProtocol("mysql", ""),
 		MyCnf:     append(env.DefaultMyCnf, mycnf...),
 		Env:       env.EnvVars(),
+		UID:       1,
 	}, nil
 }
 
@@ -198,8 +184,10 @@ func (env *LocalTestEnv) ProcessHealthCheck(name string) HealthChecker {
 func (env *LocalTestEnv) VtcomboArguments() []string {
 	return []string{
 		"-service_map", strings.Join(
-			[]string{"grpc-vtgateservice", "grpc-vtctl"}, ",",
-		)}
+			[]string{"grpc-vtgateservice", "grpc-vtctl", "grpc-vtctld"}, ",",
+		),
+		"-enable_queries",
+	}
 }
 
 // LogDirectory implements LogDirectory for LocalTestEnv.
@@ -254,9 +242,11 @@ func NewLocalTestEnv(flavor string, basePort int) (*LocalTestEnv, error) {
 // NewLocalTestEnvWithDirectory returns a new instance of the default test
 // environment with a directory explicitly specified.
 func NewLocalTestEnvWithDirectory(flavor string, basePort int, directory string) (*LocalTestEnv, error) {
-	err := os.Mkdir(path.Join(directory, "logs"), 0700)
-	if err != nil {
-		return nil, err
+	if _, err := os.Stat(path.Join(directory, "logs")); os.IsNotExist(err) {
+		err := os.Mkdir(path.Join(directory, "logs"), 0700)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	flavor, mycnf, err := GetMySQLOptions(flavor)

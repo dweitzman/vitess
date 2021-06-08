@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,7 +20,8 @@ import (
 	"reflect"
 	"testing"
 
-	"strings"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/key"
@@ -28,30 +29,23 @@ import (
 
 // createVindex creates the "numeric_static_map" vindex object which is used by
 // each test.
-func createVindex() (Vindex, error) {
+func createVindex() (SingleColumn, error) {
 	m := make(map[string]string)
 	m["json_path"] = "testdata/numeric_static_map_test.json"
-	return CreateVindex("numeric_static_map", "numericStaticMap", m)
+	vindex, err := CreateVindex("numeric_static_map", "numericStaticMap", m)
+	if err != nil {
+		panic(err)
+	}
+	return vindex.(SingleColumn), nil
 }
 
-func TestNumericStaticMapCost(t *testing.T) {
+func TestNumericStaticMapInfo(t *testing.T) {
 	numericStaticMap, err := createVindex()
-	if err != nil {
-		t.Fatalf("failed to create vindex: %v", err)
-	}
-	if numericStaticMap.Cost() != 1 {
-		t.Errorf("Cost(): %d, want 1", numericStaticMap.Cost())
-	}
-}
-
-func TestNumericStaticMapString(t *testing.T) {
-	numericStaticMap, err := createVindex()
-	if err != nil {
-		t.Fatalf("failed to create vindex: %v", err)
-	}
-	if strings.Compare("numericStaticMap", numericStaticMap.String()) != 0 {
-		t.Errorf("String(): %s, want num", numericStaticMap.String())
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, numericStaticMap.Cost())
+	assert.Equal(t, "numericStaticMap", numericStaticMap.String())
+	assert.True(t, numericStaticMap.IsUnique())
+	assert.False(t, numericStaticMap.NeedsVCursor())
 }
 
 func TestNumericStaticMapMap(t *testing.T) {
@@ -69,10 +63,9 @@ func TestNumericStaticMapMap(t *testing.T) {
 		sqltypes.NewInt64(6),
 		sqltypes.NewInt64(7),
 		sqltypes.NewInt64(8),
+		sqltypes.NULL,
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 
 	// in the third slice, we expect 2 instead of 3 as numeric_static_map_test.json
 	// has 3 mapped to 2
@@ -86,6 +79,7 @@ func TestNumericStaticMapMap(t *testing.T) {
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x06")),
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x07")),
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x08")),
+		key.DestinationNone{},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %+v, want %+v", got, want)
@@ -100,9 +94,7 @@ func TestNumericStaticMapVerify(t *testing.T) {
 	got, err := numericStaticMap.Verify(nil,
 		[]sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)},
 		[][]byte{[]byte("\x00\x00\x00\x00\x00\x00\x00\x01"), []byte("\x00\x00\x00\x00\x00\x00\x00\x01")})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []bool{true, false}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("lhu.Verify(match): %v, want %v", got, want)
@@ -110,8 +102,5 @@ func TestNumericStaticMapVerify(t *testing.T) {
 
 	// Failure test
 	_, err = numericStaticMap.Verify(nil, []sqltypes.Value{sqltypes.NewVarBinary("aa")}, [][]byte{nil})
-	wantErr := "NumericStaticMap.Verify: could not parse value: 'aa'"
-	if err == nil || err.Error() != wantErr {
-		t.Errorf("hash.Verify err: %v, want %s", err, wantErr)
-	}
+	require.EqualError(t, err, "could not parse value: 'aa'")
 }

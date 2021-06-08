@@ -1,3 +1,19 @@
+/*
+Copyright 2019 The Vitess Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package vterrors
 
 /* This file is copied from https://github.com/pkg/errors/blob/v0.8.0/stack.go */
@@ -95,16 +111,15 @@ type StackTrace []Frame
 func (st StackTrace) Format(s fmt.State, verb rune) {
 	switch verb {
 	case 'v':
-		switch {
-		case s.Flag('+'):
-			for _, f := range st {
-				fmt.Fprintf(s, "\n%+v", f)
-			}
-		case s.Flag('#'):
+
+		if s.Flag('#') {
 			fmt.Fprintf(s, "%#v", []Frame(st))
-		default:
-			fmt.Fprintf(s, "%v", []Frame(st))
+		} else {
+			for _, f := range st {
+				fmt.Fprintf(s, "\n%v", f)
+			}
 		}
+
 	case 's':
 		fmt.Fprintf(s, "%s", []Frame(st))
 	}
@@ -116,12 +131,9 @@ type stack []uintptr
 func (s *stack) Format(st fmt.State, verb rune) {
 	switch verb {
 	case 'v':
-		switch {
-		case st.Flag('+'):
-			for _, pc := range *s {
-				f := Frame(pc)
-				fmt.Fprintf(st, "\n%+v", f)
-			}
+		for _, pc := range *s {
+			f := Frame(pc)
+			fmt.Fprintf(st, "\n%+v", f)
 		}
 	}
 }
@@ -148,44 +160,4 @@ func funcname(name string) string {
 	name = name[i+1:]
 	i = strings.Index(name, ".")
 	return name[i+1:]
-}
-
-func trimGOPATH(name, file string) string {
-	// Here we want to get the source file path relative to the compile time
-	// GOPATH. As of Go 1.6.x there is no direct way to know the compiled
-	// GOPATH at runtime, but we can infer the number of path segments in the
-	// GOPATH. We note that fn.Name() returns the function name qualified by
-	// the import path, which does not include the GOPATH. Thus we can trim
-	// segments from the beginning of the file path until the number of path
-	// separators remaining is one more than the number of path separators in
-	// the function name. For example, given:
-	//
-	//    GOPATH     /home/user
-	//    file       /home/user/src/pkg/sub/file.go
-	//    fn.Name()  pkg/sub.Type.Method
-	//
-	// We want to produce:
-	//
-	//    pkg/sub/file.go
-	//
-	// From this we can easily see that fn.Name() has one less path separator
-	// than our desired output. We count separators from the end of the file
-	// path until it finds two more than in the function name and then move
-	// one character forward to preserve the initial path segment without a
-	// leading separator.
-	const sep = "/"
-	goal := strings.Count(name, sep) + 2
-	i := len(file)
-	for n := 0; n < goal; n++ {
-		i = strings.LastIndex(file[:i], sep)
-		if i == -1 {
-			// not enough separators found, set i so that the slice expression
-			// below leaves file unmodified
-			i = -len(sep)
-			break
-		}
-	}
-	// get back to 0 or trim the leading separator
-	file = file[i+len(sep):]
-	return file
 }

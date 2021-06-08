@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vitess Authors.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@ package srvtopo
 import (
 	"fmt"
 
-	"golang.org/x/net/context"
+	"context"
 
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 	vschemapb "vitess.io/vitess/go/vt/proto/vschema"
@@ -29,11 +29,11 @@ import (
 var (
 	// ErrNilUnderlyingServer is returned when attempting to create a new keyspace
 	// filtering server if a nil underlying server implementation is provided.
-	ErrNilUnderlyingServer = fmt.Errorf("Unable to construct filtering server without an underlying server")
+	ErrNilUnderlyingServer = fmt.Errorf("unable to construct filtering server without an underlying server")
 
 	// ErrTopoServerNotAvailable is returned if a caller tries to access the
 	// topo.Server supporting this srvtopo.Server.
-	ErrTopoServerNotAvailable = fmt.Errorf("Cannot access underlying topology server when keyspace filtering is enabled")
+	ErrTopoServerNotAvailable = fmt.Errorf("cannot access underlying topology server when keyspace filtering is enabled")
 )
 
 // NewKeyspaceFilteringServer constructs a new server based on the provided
@@ -72,8 +72,9 @@ func (ksf keyspaceFilteringServer) GetTopoServer() (*topo.Server, error) {
 func (ksf keyspaceFilteringServer) GetSrvKeyspaceNames(
 	ctx context.Context,
 	cell string,
+	staleOK bool,
 ) ([]string, error) {
-	keyspaces, err := ksf.server.GetSrvKeyspaceNames(ctx, cell)
+	keyspaces, err := ksf.server.GetSrvKeyspaceNames(ctx, cell, staleOK)
 	ret := make([]string, 0, len(keyspaces))
 	for _, ks := range keyspaces {
 		if ksf.selectKeyspaces[ks] {

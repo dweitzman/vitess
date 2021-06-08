@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vitess Authors
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -119,7 +119,9 @@ func (b *Bench) Run(ctx context.Context) error {
 	}
 
 	b.createThreads(ctx)
-	b.runTest(ctx)
+	if err := b.runTest(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -229,7 +231,7 @@ func (bt *benchThread) clientLoop(ctx context.Context) {
 			log.Errorf("query error: %v", err)
 			break
 		} else {
-			b.Rows.Add(int64(result.RowsAffected))
+			b.Rows.Add(int64(len(result.Rows)))
 		}
 
 	}

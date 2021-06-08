@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ limitations under the License.
 package sync2
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,7 +48,7 @@ func (i *AtomicInt32) Get() int32 {
 	return atomic.LoadInt32(&i.int32)
 }
 
-// CompareAndSwap atomatically swaps the old with the new value.
+// CompareAndSwap automatically swaps the old with the new value.
 func (i *AtomicInt32) CompareAndSwap(oldval, newval int32) (swapped bool) {
 	return atomic.CompareAndSwapInt32(&i.int32, oldval, newval)
 }
@@ -77,9 +78,34 @@ func (i *AtomicInt64) Get() int64 {
 	return atomic.LoadInt64(&i.int64)
 }
 
-// CompareAndSwap atomatically swaps the old with the new value.
+// CompareAndSwap automatically swaps the old with the new value.
 func (i *AtomicInt64) CompareAndSwap(oldval, newval int64) (swapped bool) {
 	return atomic.CompareAndSwapInt64(&i.int64, oldval, newval)
+}
+
+// AtomicFloat64 is a wrapper with a simpler interface around atomic.(Add|Store|Load|CompareAndSwap)Flat64 functions.
+type AtomicFloat64 struct {
+	uint64
+}
+
+// NewAtomicFloat64 initializes a new AtomicFloat64 with a given value.
+func NewAtomicFloat64(n float64) AtomicFloat64 {
+	return AtomicFloat64{math.Float64bits(n)}
+}
+
+// Set atomically sets n as new value.
+func (f *AtomicFloat64) Set(n float64) {
+	atomic.StoreUint64(&f.uint64, math.Float64bits(n))
+}
+
+// Get atomically returns the current value.
+func (f *AtomicFloat64) Get() float64 {
+	return math.Float64frombits(atomic.LoadUint64(&f.uint64))
+}
+
+// CompareAndSwap automatically swaps the old with the new value.
+func (f *AtomicFloat64) CompareAndSwap(oldval, newval float64) (swapped bool) {
+	return atomic.CompareAndSwapUint64(&f.uint64, math.Float64bits(oldval), math.Float64bits(newval))
 }
 
 // AtomicDuration is a wrapper with a simpler interface around atomic.(Add|Store|Load|CompareAndSwap)Int64 functions.
@@ -107,7 +133,7 @@ func (d *AtomicDuration) Get() time.Duration {
 	return time.Duration(atomic.LoadInt64(&d.int64))
 }
 
-// CompareAndSwap atomatically swaps the old with the new value.
+// CompareAndSwap automatically swaps the old with the new value.
 func (d *AtomicDuration) CompareAndSwap(oldval, newval time.Duration) (swapped bool) {
 	return atomic.CompareAndSwapInt64(&d.int64, int64(oldval), int64(newval))
 }
@@ -139,7 +165,7 @@ func (i *AtomicBool) Get() bool {
 	return atomic.LoadInt32(&i.int32) != 0
 }
 
-// CompareAndSwap atomatically swaps the old with the new value.
+// CompareAndSwap automatically swaps the old with the new value.
 func (i *AtomicBool) CompareAndSwap(o, n bool) bool {
 	var old, new int32
 	if o {
@@ -174,7 +200,7 @@ func (s *AtomicString) Get() string {
 	return str
 }
 
-// CompareAndSwap atomatically swaps the old with the new value.
+// CompareAndSwap automatically swaps the old with the new value.
 func (s *AtomicString) CompareAndSwap(oldval, newval string) (swqpped bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

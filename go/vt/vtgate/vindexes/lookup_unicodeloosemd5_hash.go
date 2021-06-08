@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,16 +21,19 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"vitess.io/vitess/go/vt/vtgate/evalengine"
+
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/key"
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtgatepb "vitess.io/vitess/go/vt/proto/vtgate"
 )
 
 var (
-	_ Vindex = (*LookupUnicodeLooseMD5Hash)(nil)
-	_ Lookup = (*LookupUnicodeLooseMD5Hash)(nil)
-	_ Vindex = (*LookupUnicodeLooseMD5HashUnique)(nil)
-	_ Lookup = (*LookupUnicodeLooseMD5HashUnique)(nil)
+	_ SingleColumn = (*LookupUnicodeLooseMD5Hash)(nil)
+	_ Lookup       = (*LookupUnicodeLooseMD5Hash)(nil)
+	_ SingleColumn = (*LookupUnicodeLooseMD5HashUnique)(nil)
+	_ Lookup       = (*LookupUnicodeLooseMD5HashUnique)(nil)
 )
 
 func init() {
@@ -93,9 +96,9 @@ func (lh *LookupUnicodeLooseMD5Hash) IsUnique() bool {
 	return false
 }
 
-// IsFunctional returns false since the Vindex is not functional.
-func (lh *LookupUnicodeLooseMD5Hash) IsFunctional() bool {
-	return false
+// NeedsVCursor satisfies the Vindex interface.
+func (lh *LookupUnicodeLooseMD5Hash) NeedsVCursor() bool {
+	return true
 }
 
 // Map can map ids to key.Destination objects.
@@ -108,11 +111,19 @@ func (lh *LookupUnicodeLooseMD5Hash) Map(vcursor VCursor, ids []sqltypes.Value) 
 		return out, nil
 	}
 
+	// if ignore_nulls is set and the query is about single null value, then fallback to all shards
+	if len(ids) == 1 && ids[0].IsNull() && lh.lkp.IgnoreNulls {
+		for range ids {
+			out = append(out, key.DestinationKeyRange{KeyRange: &topodatapb.KeyRange{}})
+		}
+		return out, nil
+	}
+
 	ids, err := convertIds(ids)
 	if err != nil {
 		return nil, err
 	}
-	results, err := lh.lkp.Lookup(vcursor, ids)
+	results, err := lh.lkp.Lookup(vcursor, ids, vtgatepb.CommitOrder_NORMAL)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +134,7 @@ func (lh *LookupUnicodeLooseMD5Hash) Map(vcursor VCursor, ids []sqltypes.Value) 
 		}
 		ksids := make([][]byte, 0, len(result.Rows))
 		for _, row := range result.Rows {
-			num, err := sqltypes.ToUint64(row[0])
+			num, err := evalengine.ToUint64(row[0])
 			if err != nil {
 				// A failure to convert is equivalent to not being
 				// able to map.
@@ -184,7 +195,7 @@ func (lh *LookupUnicodeLooseMD5Hash) Update(vcursor VCursor, oldValues []sqltype
 	if err != nil {
 		return fmt.Errorf("lookup.Update.convert: %v", err)
 	}
-	return lh.lkp.Update(vcursor, oldValues, sqltypes.NewUint64(v), newValues)
+	return lh.lkp.Update(vcursor, oldValues, ksid, sqltypes.NewUint64(v), newValues)
 }
 
 // Delete deletes the entry from the vindex table.
@@ -197,7 +208,7 @@ func (lh *LookupUnicodeLooseMD5Hash) Delete(vcursor VCursor, rowsColValues [][]s
 	if err != nil {
 		return fmt.Errorf("lookup.Delete.convert: %v", err)
 	}
-	return lh.lkp.Delete(vcursor, rowsColValues, sqltypes.NewUint64(v))
+	return lh.lkp.Delete(vcursor, rowsColValues, sqltypes.NewUint64(v), vtgatepb.CommitOrder_NORMAL)
 }
 
 // MarshalJSON returns a JSON representation of LookupHash.
@@ -260,9 +271,9 @@ func (lhu *LookupUnicodeLooseMD5HashUnique) IsUnique() bool {
 	return true
 }
 
-// IsFunctional returns false since the Vindex is not functional.
-func (lhu *LookupUnicodeLooseMD5HashUnique) IsFunctional() bool {
-	return false
+// NeedsVCursor satisfies the Vindex interface.
+func (lhu *LookupUnicodeLooseMD5HashUnique) NeedsVCursor() bool {
+	return true
 }
 
 // Map can map ids to key.Destination objects.
@@ -279,7 +290,7 @@ func (lhu *LookupUnicodeLooseMD5HashUnique) Map(vcursor VCursor, ids []sqltypes.
 	if err != nil {
 		return nil, err
 	}
-	results, err := lhu.lkp.Lookup(vcursor, ids)
+	results, err := lhu.lkp.Lookup(vcursor, ids, vtgatepb.CommitOrder_NORMAL)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +299,7 @@ func (lhu *LookupUnicodeLooseMD5HashUnique) Map(vcursor VCursor, ids []sqltypes.
 		case 0:
 			out = append(out, key.DestinationNone{})
 		case 1:
-			num, err := sqltypes.ToUint64(result.Rows[0][0])
+			num, err := evalengine.ToUint64(result.Rows[0][0])
 			if err != nil {
 				out = append(out, key.DestinationNone{})
 				continue
@@ -345,7 +356,7 @@ func (lhu *LookupUnicodeLooseMD5HashUnique) Delete(vcursor VCursor, rowsColValue
 	if err != nil {
 		return fmt.Errorf("lookup.Delete.convert: %v", err)
 	}
-	return lhu.lkp.Delete(vcursor, rowsColValues, sqltypes.NewUint64(v))
+	return lhu.lkp.Delete(vcursor, rowsColValues, sqltypes.NewUint64(v), vtgatepb.CommitOrder_NORMAL)
 }
 
 // Update updates the entry in the vindex table.
@@ -362,7 +373,7 @@ func (lhu *LookupUnicodeLooseMD5HashUnique) Update(vcursor VCursor, oldValues []
 	if err != nil {
 		return fmt.Errorf("lookup.Update.convert: %v", err)
 	}
-	return lhu.lkp.Update(vcursor, oldValues, sqltypes.NewUint64(v), newValues)
+	return lhu.lkp.Update(vcursor, oldValues, ksid, sqltypes.NewUint64(v), newValues)
 }
 
 // MarshalJSON returns a JSON representation of LookupHashUnique.
@@ -371,7 +382,7 @@ func (lhu *LookupUnicodeLooseMD5HashUnique) MarshalJSON() ([]byte, error) {
 }
 
 func unicodeHashValue(value sqltypes.Value) (sqltypes.Value, error) {
-	hash, err := unicodeHash(value)
+	hash, err := unicodeHash(vMD5Hash, value)
 	if err != nil {
 		return sqltypes.NULL, err
 	}

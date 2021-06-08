@@ -1,5 +1,5 @@
 /*
-Copyright 2018 The Vitess Authors.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,13 +19,16 @@ package planbuilder
 import (
 	"reflect"
 	"testing"
+
+	"vitess.io/vitess/go/vt/sqlparser"
 )
 
 func TestGenerateSubqueryVars(t *testing.T) {
-	jt := newJointab(map[string]struct{}{
+	reserved := sqlparser.NewReservedVars("vtg", map[string]struct{}{
 		"__sq1":            {},
 		"__sq_has_values3": {},
 	})
+	jt := newJointab(reserved)
 
 	v1, v2 := jt.GenerateSubqueryVars()
 	combined := []string{v1, v2}

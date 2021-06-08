@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,6 +30,6 @@ type Reparent struct {
 	base.StatusUpdater
 
 	ShardInfo            topo.ShardInfo
-	OldMaster, NewMaster topodatapb.Tablet
+	OldMaster, NewMaster *topodatapb.Tablet
 	ExternalID           string
 }

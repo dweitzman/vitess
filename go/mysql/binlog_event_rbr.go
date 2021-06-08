@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -7,7 +7,7 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-Unless required by applicable law or agreedto in writing, software
+Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
@@ -22,9 +22,12 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"vitess.io/vitess/go/sqltypes"
+	"vitess.io/vitess/go/vt/proto/vtrpc"
+	"vitess.io/vitess/go/vt/vterrors"
 
 	querypb "vitess.io/vitess/go/vt/proto/query"
 )
@@ -89,10 +92,10 @@ func (ev binlogEvent) TableMap(f BinlogFormat) (*TableMap, error) {
 		}
 	}
 	if pos != expectedEnd {
-		return nil, fmt.Errorf("unexpected metadata end: got %v was expecting %v (data=%v)", pos, expectedEnd, data)
+		return nil, vterrors.Errorf(vtrpc.Code_INTERNAL, "unexpected metadata end: got %v was expecting %v (data=%v)", pos, expectedEnd, data)
 	}
 
-	// A bit array that says if each colum can be NULL.
+	// A bit array that says if each column can be NULL.
 	result.CanBeNull, _ = newBitmap(data, pos, columnCount)
 
 	return result, nil
@@ -119,7 +122,7 @@ func metadataLength(typ byte) int {
 
 	default:
 		// Unknown type. This is used in tests only, so panic.
-		panic(fmt.Errorf("metadataLength: unhandled data type: %v", typ))
+		panic(vterrors.Errorf(vtrpc.Code_INTERNAL, "metadataLength: unhandled data type: %v", typ))
 	}
 }
 
@@ -155,7 +158,7 @@ func metadataRead(data []byte, pos int, typ byte) (uint16, int, error) {
 
 	default:
 		// Unknown types, we can't go on.
-		return 0, 0, fmt.Errorf("metadataRead: unhandled data type: %v", typ)
+		return 0, 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "metadataRead: unhandled data type: %v", typ)
 	}
 }
 
@@ -186,7 +189,7 @@ func metadataWrite(data []byte, pos int, typ byte, value uint16) int {
 
 	default:
 		// Unknown type. This is used in tests only, so panic.
-		panic(fmt.Errorf("metadataRead: unhandled data type: %v", typ))
+		panic(vterrors.Errorf(vtrpc.Code_INTERNAL, "metadataRead: unhandled data type: %v", typ))
 	}
 }
 
@@ -286,7 +289,7 @@ func cellLength(data []byte, pos int, typ byte, metadata uint16) (int, error) {
 				uint32(data[pos+2])<<16|
 				uint32(data[pos+3])<<24), nil
 		default:
-			return 0, fmt.Errorf("unsupported blob/geometry metadata value %v (data: %v pos: %v)", metadata, data, pos)
+			return 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unsupported blob/geometry metadata value %v (data: %v pos: %v)", metadata, data, pos)
 		}
 	case TypeString:
 		// This may do String, Enum, and Set. The type is in
@@ -307,7 +310,7 @@ func cellLength(data []byte, pos int, typ byte, metadata uint16) (int, error) {
 		return l + 1, nil
 
 	default:
-		return 0, fmt.Errorf("unsupported type %v (data: %v pos: %v)", typ, data, pos)
+		return 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unsupported type %v (data: %v pos: %v)", typ, data, pos)
 	}
 }
 
@@ -445,15 +448,20 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 		return sqltypes.MakeTrusted(querypb.Type_DATETIME,
 			[]byte(fmt.Sprintf("%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, minute, second))), 8, nil
 	case TypeVarchar, TypeVarString:
+		// We trust that styp is compatible with the column type
 		// Length is encoded in 1 or 2 bytes.
+		typeToUse := querypb.Type_VARCHAR
+		if styp == querypb.Type_VARBINARY || styp == querypb.Type_BINARY || styp == querypb.Type_BLOB {
+			typeToUse = styp
+		}
 		if metadata > 255 {
 			l := int(uint64(data[pos]) |
 				uint64(data[pos+1])<<8)
-			return sqltypes.MakeTrusted(querypb.Type_VARCHAR,
+			return sqltypes.MakeTrusted(typeToUse,
 				data[pos+2:pos+2+l]), l + 2, nil
 		}
 		l := int(data[pos])
-		return sqltypes.MakeTrusted(querypb.Type_VARCHAR,
+		return sqltypes.MakeTrusted(typeToUse,
 			data[pos+1:pos+1+l]), l + 1, nil
 	case TypeBit:
 		// The contents is just the bytes, quoted.
@@ -693,7 +701,7 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 		// now the full digits, 32 bits each, 9 digits
 		for i := 0; i < intg0; i++ {
 			val = binary.BigEndian.Uint32(d[pos : pos+4])
-			fmt.Fprintf(txt, "%9d", val)
+			fmt.Fprintf(txt, "%09d", val)
 			pos += 4
 		}
 
@@ -757,8 +765,21 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 			}
 		}
 
-		return sqltypes.MakeTrusted(querypb.Type_DECIMAL,
-			txt.Bytes()), l, nil
+		// remove preceding 0s from the integral part, otherwise we get "000000000001.23" instead of "1.23"
+		trimPrecedingZeroes := func(b []byte) []byte {
+			s := string(b)
+			isNegative := false
+			if s[0] == '-' {
+				isNegative = true
+				s = s[1:]
+			}
+			s = strings.TrimLeft(s, "0")
+			if isNegative {
+				s = fmt.Sprintf("-%s", s)
+			}
+			return []byte(s)
+		}
+		return sqltypes.MakeTrusted(querypb.Type_DECIMAL, trimPrecedingZeroes(txt.Bytes())), l, nil
 
 	case TypeEnum:
 		switch metadata & 0xff {
@@ -772,7 +793,7 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 			return sqltypes.MakeTrusted(querypb.Type_ENUM,
 				strconv.AppendUint(nil, uint64(val), 10)), 2, nil
 		default:
-			return sqltypes.NULL, 0, fmt.Errorf("unexpected enum size: %v", metadata&0xff)
+			return sqltypes.NULL, 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unexpected enum size: %v", metadata&0xff)
 		}
 
 	case TypeSet:
@@ -800,16 +821,25 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 				uint32(data[pos+2])<<16 |
 				uint32(data[pos+3])<<24)
 		default:
-			return sqltypes.NULL, 0, fmt.Errorf("unsupported blob metadata value %v (data: %v pos: %v)", metadata, data, pos)
+			return sqltypes.NULL, 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unsupported blob metadata value %v (data: %v pos: %v)", metadata, data, pos)
 		}
 		pos += int(metadata)
 
+		var limitArray = func(data []byte, limit int) []byte {
+			if len(data) > limit {
+				return data[:limit]
+			}
+			return data
+		}
 		// For JSON, we parse the data, and emit SQL.
 		if typ == TypeJSON {
-			d, err := printJSONData(data[pos : pos+l])
+			var err error
+			jsonData := data[pos : pos+l]
+			s, err := getJSONValue(jsonData)
 			if err != nil {
-				return sqltypes.NULL, 0, fmt.Errorf("error parsing JSON data %v: %v", data[pos:pos+l], err)
+				return sqltypes.NULL, 0, vterrors.Wrapf(err, "error stringifying JSON data %v", limitArray(jsonData, 100))
 			}
+			d := []byte(s)
 			return sqltypes.MakeTrusted(sqltypes.Expression,
 				d), l + int(metadata), nil
 		}
@@ -835,7 +865,7 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 				return sqltypes.MakeTrusted(querypb.Type_UINT16,
 					strconv.AppendUint(nil, uint64(val), 10)), 2, nil
 			default:
-				return sqltypes.NULL, 0, fmt.Errorf("unexpected enum size: %v", metadata&0xff)
+				return sqltypes.NULL, 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unexpected enum size: %v", metadata&0xff)
 			}
 		}
 		if t == TypeSet {
@@ -865,12 +895,19 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 		l := int(data[pos])
 		mdata := data[pos+1 : pos+1+l]
 		if sqltypes.IsBinary(styp) {
-			// Fixed length binaries have to be padded with zeroes
-			// up to the length of the field. Otherwise, equality checks
-			// fail against saved data. See https://github.com/vitessio/vitess/issues/3984.
-			ret := make([]byte, max)
-			copy(ret, mdata)
-			return sqltypes.MakeTrusted(querypb.Type_BINARY, ret), l + 1, nil
+			// For binary(n) column types, mysql pads the data on the right with nulls. However the binlog event contains
+			// the data without this padding. This causes several issues:
+			//    * if a binary(n) column is part of the sharding key, the keyspace_id() returned during the copy phase
+			//      (where the value is the result of a mysql query) is different from the one during replication
+			//      (where the value is the one from the binlogs)
+			//    * mysql where clause comparisons do not do the right thing without padding
+			// So for fixed length binary() columns we right-pad it with nulls if necessary
+			if l < max {
+				paddedData := make([]byte, max)
+				copy(paddedData[:l], mdata)
+				mdata = paddedData
+			}
+			return sqltypes.MakeTrusted(querypb.Type_BINARY, mdata), l + 1, nil
 		}
 		return sqltypes.MakeTrusted(querypb.Type_VARCHAR, mdata), l + 1, nil
 
@@ -892,14 +929,14 @@ func CellValue(data []byte, pos int, typ byte, metadata uint16, styp querypb.Typ
 				uint32(data[pos+2])<<16 |
 				uint32(data[pos+3])<<24)
 		default:
-			return sqltypes.NULL, 0, fmt.Errorf("unsupported geometry metadata value %v (data: %v pos: %v)", metadata, data, pos)
+			return sqltypes.NULL, 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unsupported geometry metadata value %v (data: %v pos: %v)", metadata, data, pos)
 		}
 		pos += int(metadata)
 		return sqltypes.MakeTrusted(querypb.Type_GEOMETRY,
 			data[pos:pos+l]), l + int(metadata), nil
 
 	default:
-		return sqltypes.NULL, 0, fmt.Errorf("unsupported type %v", typ)
+		return sqltypes.NULL, 0, vterrors.Errorf(vtrpc.Code_INTERNAL, "unsupported type %v", typ)
 	}
 }
 

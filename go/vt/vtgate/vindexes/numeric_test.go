@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,28 +20,25 @@ import (
 	"reflect"
 	"testing"
 
-	"strings"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/key"
 )
 
-var numeric Vindex
+var numeric SingleColumn
 
 func init() {
-	numeric, _ = CreateVindex("numeric", "num", nil)
+	vindex, _ := CreateVindex("numeric", "num", nil)
+	numeric = vindex.(SingleColumn)
 }
 
-func TestNumericCost(t *testing.T) {
-	if numeric.Cost() != 0 {
-		t.Errorf("Cost(): %d, want 0", numeric.Cost())
-	}
-}
-
-func TestNumericString(t *testing.T) {
-	if strings.Compare("num", numeric.String()) != 0 {
-		t.Errorf("String(): %s, want num", numeric.String())
-	}
+func TestNumericInfo(t *testing.T) {
+	assert.Equal(t, 0, numeric.Cost())
+	assert.Equal(t, "num", numeric.String())
+	assert.True(t, numeric.IsUnique())
+	assert.False(t, numeric.NeedsVCursor())
 }
 
 func TestNumericMap(t *testing.T) {
@@ -55,10 +52,10 @@ func TestNumericMap(t *testing.T) {
 		sqltypes.NewInt64(6),
 		sqltypes.NewInt64(7),
 		sqltypes.NewInt64(8),
+		sqltypes.NewInt32(8),
+		sqltypes.NULL,
 	})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []key.Destination{
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x01")),
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x02")),
@@ -69,6 +66,8 @@ func TestNumericMap(t *testing.T) {
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x06")),
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x07")),
 		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x08")),
+		key.DestinationKeyspaceID([]byte("\x00\x00\x00\x00\x00\x00\x00\x08")),
+		key.DestinationNone{},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Map(): %+v, want %+v", got, want)
@@ -79,9 +78,7 @@ func TestNumericVerify(t *testing.T) {
 	got, err := numeric.Verify(nil,
 		[]sqltypes.Value{sqltypes.NewInt64(1), sqltypes.NewInt64(2)},
 		[][]byte{[]byte("\x00\x00\x00\x00\x00\x00\x00\x01"), []byte("\x00\x00\x00\x00\x00\x00\x00\x01")})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []bool{true, false}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("lhu.Verify(match): %v, want %v", got, want)
@@ -89,17 +86,12 @@ func TestNumericVerify(t *testing.T) {
 
 	// Failure test
 	_, err = numeric.Verify(nil, []sqltypes.Value{sqltypes.NewVarBinary("aa")}, [][]byte{nil})
-	wantErr := "Numeric.Verify: could not parse value: 'aa'"
-	if err == nil || err.Error() != wantErr {
-		t.Errorf("hash.Verify err: %v, want %s", err, wantErr)
-	}
+	require.EqualError(t, err, "could not parse value: 'aa'")
 }
 
 func TestNumericReverseMap(t *testing.T) {
 	got, err := numeric.(Reversible).ReverseMap(nil, [][]byte{[]byte("\x00\x00\x00\x00\x00\x00\x00\x01")})
-	if err != nil {
-		t.Error(err)
-	}
+	require.NoError(t, err)
 	want := []sqltypes.Value{sqltypes.NewUint64(1)}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ReverseMap(): %v, want %v", got, want)

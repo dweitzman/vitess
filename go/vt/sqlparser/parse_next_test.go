@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Google Inc.
+Copyright 2019 The Vitess Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ func TestParseNextValid(t *testing.T) {
 		sql.WriteRune(';')
 	}
 
-	tokens := NewTokenizer(&sql)
+	tokens := NewStringTokenizer(sql.String())
 	for i, tcase := range validSQL {
 		input := tcase.input + ";"
 		want := tcase.output
@@ -203,11 +203,11 @@ func TestParseNextStrictNonStrict(t *testing.T) {
 
 	// Now try again with strict parsing and observe the expected error.
 	tokens = NewStringTokenizer(input)
-	tree, err := ParseNextStrictDDL(tokens)
+	_, err := ParseNextStrictDDL(tokens)
 	if err == nil || !strings.Contains(err.Error(), "ignore") {
-		t.Fatalf("ParseNext(%q) err = %q, want nil", input, err)
+		t.Fatalf("ParseNext(%q) err = %q, want ignore", input, err)
 	}
-	tree, err = ParseNextStrictDDL(tokens)
+	tree, err := ParseNextStrictDDL(tokens)
 	if err != nil {
 		t.Fatalf("ParseNext(%q) err = %q, want nil", input, err)
 	}
